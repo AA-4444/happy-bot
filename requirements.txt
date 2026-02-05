@@ -2,7 +2,7 @@ aiogram==3.*
 fastapi
 uvicorn[standard]
 jinja2
-aiofiles
-aiosqlite
+asyncpg==0.30.0
 openpyxl
 python-multipart
+httpx
