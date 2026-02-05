@@ -1,0 +1,8 @@
+aiogram==3.*
+fastapi
+uvicorn[standard]
+jinja2
+aiofiles
+aiosqlite
+openpyxl
+python-multipart

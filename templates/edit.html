@@ -1,0 +1,263 @@
+{# templates/edit.html #}
+{% extends "base.html" %}
+{% block content %}
+  <div class="flex items-center justify-between">
+	<h1 class="text-base font-medium">{{ "New block" if is_new else "Edit block" }}</h1>
+	<a href="/flow/{{ block.flow }}" class="text-sm text-white/50 hover:text-white/70">← back</a>
+  </div>
+
+  {% if error %}
+	<div class="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">
+	  {{ error }}
+	</div>
+  {% endif %}
+
+  <form class="mt-6 space-y-4" method="post" action="/block/save" enctype="multipart/form-data">
+	<input type="hidden" name="block_id" value="{{ block.id }}" />
+
+	{# чтобы если файл уже есть — он не пропал при Save без нового upload #}
+	<input type="hidden" name="file_path" value="{{ block.file_path if block.file_path is defined else '' }}" />
+	<input type="hidden" name="file_kind" value="{{ block.file_kind if block.file_kind is defined else '' }}" />
+
+	<div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+	  <div>
+		<label class="text-xs text-white/50">flow</label>
+		<input
+		  name="flow"
+		  value="{{ block.flow }}"
+		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		/>
+	  </div>
+
+	  <div>
+		<label class="text-xs text-white/50">position</label>
+		<input
+		  name="position"
+		  type="number"
+		  value="{{ block.position }}"
+		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		/>
+	  </div>
+
+	  <div>
+		<label class="text-xs text-white/50">type</label>
+		<select
+		  id="typeSel"
+		  name="type"
+		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		>
+		  {% for t in ["text","circle","video","buttons"] %}
+			<option value="{{ t }}" {% if block.type==t %}selected{% endif %}>{{ t }}</option>
+		  {% endfor %}
+		</select>
+	  </div>
+	</div>
+
+	<div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+	  <div>
+		<label class="text-xs text-white/50">title (для video/buttons)</label>
+		<input
+		  name="title"
+		  value="{{ block.title }}"
+		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		/>
+	  </div>
+
+	  <div>
+		<label class="text-xs text-white/50">delay_seconds</label>
+		<input
+		  name="delay_seconds"
+		  type="number"
+		  step="0.1"
+		  value="{{ block.delay }}"
+		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		/>
+	  </div>
+
+	  <div>
+		<label class="text-xs text-white/50">is_active (0/1)</label>
+		<input
+		  name="is_active"
+		  type="number"
+		  value="{{ block.is_active }}"
+		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		/>
+	  </div>
+	</div>
+
+	<!-- TEXT -->
+	<div id="secText">
+	  <label class="text-xs text-white/50">text</label>
+	  <textarea
+		name="text"
+		rows="6"
+		class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+	  >{{ block.text }}</textarea>
+	</div>
+
+	<!-- MEDIA -->
+	<div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="secMedia">
+	  <div>
+		<label class="text-xs text-white/50">circle_path (или загрузить файл)</label>
+		<input
+		  name="circle_path"
+		  value="{{ block.circle }}"
+		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		/>
+		<div class="mt-2">
+		  <input type="file" name="circle_file" class="text-sm text-white/70" />
+		</div>
+
+		{% if block.circle %}
+		  <div class="mt-2 text-[11px] text-white/45">current: {{ block.circle }}</div>
+		{% endif %}
+	  </div>
+
+	  <div>
+		<label class="text-xs text-white/50">video_url</label>
+		<input
+		  name="video_url"
+		  value="{{ block.video }}"
+		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		/>
+	  </div>
+	</div>
+
+	<!-- ATTACHMENT (НОВОЕ) -->
+	<div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+	  <div class="flex items-center justify-between mb-3">
+		<div class="text-sm font-medium">Attachment</div>
+		<div class="text-xs text-white/40">любой файл (pdf/docx/png/zip и т.д.)</div>
+	  </div>
+
+	  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+		<div>
+		  <label class="text-xs text-white/50">upload file</label>
+		  <input type="file" name="attach_file" class="block mt-2 text-sm text-white/70" />
+		  <div class="text-[11px] text-white/35 mt-2">
+			Если загрузишь — файл сохранится в <code>media/</code> и будет отправляться ботом в этом блоке (после правок в bot.py).
+		  </div>
+		</div>
+
+		<div>
+		  <label class="text-xs text-white/50">current</label>
+		  <div class="mt-2 text-sm text-white/80">
+			{% if block.file_path is defined and block.file_path %}
+			  <div class="text-[11px] text-white/45">kind: {{ block.file_kind }}</div>
+			  <a class="text-white/80 underline" href="/{{ block.file_path }}" target="_blank">{{ block.file_path }}</a>
+			{% else %}
+			  <span class="text-white/35">—</span>
+			{% endif %}
+		  </div>
+
+		  {# очистка файла: просто отправим пустые значения в скрытые поля #}
+		  <div class="mt-3">
+			<button
+			  type="button"
+			  class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10"
+			  onclick="document.querySelector('input[name=file_path]').value=''; document.querySelector('input[name=file_kind]').value=''; alert('Attachment очищен. Нажми Save.');"
+			>
+			  Clear attachment
+			</button>
+		  </div>
+		</div>
+	  </div>
+	</div>
+
+	<!-- BUTTONS EASY MODE -->
+	<div id="secButtons" class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+	  <div class="flex items-center justify-between mb-3">
+		<div class="text-sm font-medium">Buttons</div>
+		<div class="text-xs text-white/40">до 3 кнопок</div>
+	  </div>
+
+	  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+		<div>
+		  <label class="text-xs text-white/50">Button 1 text</label>
+		  <input
+			name="btn1_text"
+			value="{{ block.btn1_text }}"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
+			placeholder="Например: Перейти на сайт"
+		  />
+		</div>
+		<div>
+		  <label class="text-xs text-white/50">Button 1 url</label>
+		  <input
+			name="btn1_url"
+			value="{{ block.btn1_url }}"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
+			placeholder="https://..."
+		  />
+		</div>
+
+		<div>
+		  <label class="text-xs text-white/50">Button 2 text</label>
+		  <input
+			name="btn2_text"
+			value="{{ block.btn2_text }}"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
+			placeholder="(опционально)"
+		  />
+		</div>
+		<div>
+		  <label class="text-xs text-white/50">Button 2 url</label>
+		  <input
+			name="btn2_url"
+			value="{{ block.btn2_url }}"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
+			placeholder="https://..."
+		  />
+		</div>
+
+		<div>
+		  <label class="text-xs text-white/50">Button 3 text</label>
+		  <input
+			name="btn3_text"
+			value="{{ block.btn3_text }}"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
+			placeholder="(опционально)"
+		  />
+		</div>
+		<div>
+		  <label class="text-xs text-white/50">Button 3 url</label>
+		  <input
+			name="btn3_url"
+			value="{{ block.btn3_url }}"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
+			placeholder="https://..."
+		  />
+		</div>
+	  </div>
+
+	  <details class="mt-4">
+		<summary class="text-xs text-white/50 cursor-pointer">Advanced (JSON)</summary>
+		<textarea
+		  name="buttons_json"
+		  rows="4"
+		  class="w-full mt-2 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		>{{ block.buttons_json if block.buttons_json is defined and block.buttons_json else block.buttons }}</textarea>
+		<div class="text-[11px] text-white/35 mt-1">
+		  Если заполнено — будет использован JSON. Иначе берём кнопки сверху.
+		</div>
+	  </details>
+	</div>
+
+	<button class="px-4 py-2 rounded-xl bg-white text-black text-sm font-medium hover:opacity-90">
+	  Save
+	</button>
+  </form>
+
+  <script>
+	function toggleSections() {
+	  // показываем кнопки всегда и НЕ выключаем поля
+	  document.getElementById("secButtons").style.display = "block";
+	  document.getElementById("secButtons").style.opacity = "1";
+	  document.getElementById("secButtons").style.pointerEvents = "auto";
+	  document.querySelectorAll("#secButtons input, #secButtons textarea").forEach(i => i.disabled = false);
+	}
+
+	document.getElementById("typeSel").addEventListener("change", toggleSections);
+	toggleSections();
+  </script>
+{% endblock %}

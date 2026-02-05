@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="flex items-center justify-between gap-4">
+	<div>
+	  <a href="/" class="text-xs text-white/50 hover:text-white/70">← back</a>
+	  <h1 class="text-base font-medium mt-2">Flow: <span class="text-white/80">{{ flow }}</span></h1>
+	  <div class="text-xs text-white/40 mt-1">Блоков: {{ blocks|length }}</div>
+	</div>
+
+	<a href="/block/new?flow={{ flow }}"
+	   class="px-4 py-2 rounded-xl bg-white text-black text-sm font-medium hover:opacity-90">
+	  + Add block
+	</a>
+  </div>
+
+  <div class="mt-6 space-y-3">
+	{% for b in blocks %}
+	  <div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+		<div class="flex items-start justify-between gap-4">
+		  <div class="min-w-0">
+			<div class="flex flex-wrap items-center gap-2">
+			  <span class="text-[11px] px-2 py-1 rounded-lg bg-white/5 border border-white/10">{{ b.type }}</span>
+			  <span class="text-[11px] text-white/45">pos {{ b.position }}</span>
+			  <span class="text-[11px] text-white/45">delay {{ "%.1f"|format(b.delay) }}s</span>
+
+			  {% if b.file_path %}
+				<span class="text-[11px] px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-200">
+				  file
+				</span>
+			  {% endif %}
+
+			  {% if b.is_active == 0 %}
+				<span class="text-[11px] px-2 py-1 rounded-lg bg-red-500/10 border border-red-500/20 text-red-200">inactive</span>
+			  {% endif %}
+			</div>
+
+			{% if b.title %}
+			  <div class="mt-2 font-medium text-white/90">{{ b.title }}</div>
+			{% endif %}
+
+			{% if b.text %}
+			  <pre class="mt-2 whitespace-pre-wrap text-sm text-white/80">{{ b.text }}</pre>
+			{% endif %}
+
+			{% if b.circle %}
+			  <div class="mt-2 text-xs text-white/45">circle: {{ b.circle }}</div>
+			{% endif %}
+
+			{% if b.video %}
+			  <div class="mt-2 text-xs text-white/45">video: {{ b.video }}</div>
+			{% endif %}
+
+			{% if b.buttons %}
+			  <div class="mt-2 text-xs text-white/45">buttons: {{ b.buttons }}</div>
+			{% endif %}
+
+			{% if b.file_path %}
+			  <div class="mt-2 text-xs text-white/45">
+				file: <span class="text-white/70">{{ b.file_path }}</span>
+				{% if b.file_kind %}
+				  <span class="text-white/35">({{ b.file_kind }})</span>
+				{% endif %}
+			  </div>
+			{% endif %}
+		  </div>
+
+		  <div class="flex flex-col gap-2 w-[92px]">
+			<a href="/block/{{ b.id }}/edit"
+			   class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10 text-center">
+			  Edit
+			</a>
+
+			<form method="post" action="/block/{{ b.id }}/up">
+			  <input type="hidden" name="flow" value="{{ flow }}" />
+			  <button class="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10">↑</button>
+			</form>
+
+			<form method="post" action="/block/{{ b.id }}/down">
+			  <input type="hidden" name="flow" value="{{ flow }}" />
+			  <button class="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10">↓</button>
+			</form>
+
+			<form method="post" action="/block/{{ b.id }}/delete" onsubmit="return confirm('Удалить блок?')">
+			  <input type="hidden" name="flow" value="{{ flow }}" />
+			  <button class="w-full px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-sm hover:bg-red-500/20 text-red-200">
+				Delete
+			  </button>
+			</form>
+		  </div>
+		</div>
+	  </div>
+	{% endfor %}
+  </div>
+{% endblock %}

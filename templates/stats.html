@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h1 class="text-base font-medium mb-4">📊 Bot statistics</h1>
+
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+  <div class="rounded-xl border border-white/10 p-4">
+	<div class="text-xs text-white/40">Total users</div>
+	<div class="text-xl font-semibold">{{ stats.total_users }}</div>
+  </div>
+
+  <div class="rounded-xl border border-white/10 p-4">
+	<div class="text-xs text-white/40">Active last hour</div>
+	<div class="text-xl font-semibold">{{ stats.active_last_hour }}</div>
+  </div>
+
+  <div class="rounded-xl border border-white/10 p-4">
+	<div class="text-xs text-white/40">Total /start</div>
+	<div class="text-xl font-semibold">{{ stats.total_starts }}</div>
+  </div>
+
+  <div class="rounded-xl border border-white/10 p-4">
+	<div class="text-xs text-white/40">Messages</div>
+	<div class="text-xl font-semibold">{{ stats.total_messages }}</div>
+  </div>
+</div>
+
+<h2 class="text-sm font-medium mb-2">👥 Users</h2>
+
+<div class="rounded-xl border border-white/10 overflow-hidden">
+  <table class="w-full text-sm">
+	<thead class="bg-white/5">
+	  <tr>
+		<th class="text-left px-3 py-2">ID</th>
+		<th class="text-left px-3 py-2">Username</th>
+		<th class="text-left px-3 py-2">Starts</th>
+		<th class="text-left px-3 py-2">Messages</th>
+		<th class="text-left px-3 py-2">Last seen</th>
+	  </tr>
+	</thead>
+	<tbody>
+	  {% for u in users %}
+	  <tr class="border-t border-white/10">
+		<td class="px-3 py-2">{{ u.user_id }}</td>
+		<td class="px-3 py-2">@{{ u.username }}</td>
+		<td class="px-3 py-2">{{ u.starts_count }}</td>
+		<td class="px-3 py-2">{{ u.messages_count }}</td>
+		<td class="px-3 py-2 text-xs text-white/40">
+		  {{ u.last_seen_ts }}
+		</td>
+	  </tr>
+	  {% endfor %}
+	</tbody>
+  </table>
+</div>
+
+{% endblock %}
