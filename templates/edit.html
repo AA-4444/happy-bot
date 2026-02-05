@@ -3,7 +3,7 @@
 {% block content %}
   <div class="flex items-center justify-between">
 	<h1 class="text-base font-medium">{{ "New block" if is_new else "Edit block" }}</h1>
-	<a href="/flow/{{ block.flow }}" class="text-sm text-white/50 hover:text-white/70">← back</a>
+	<a href="/flow/{{ block.get('flow','') }}" class="text-sm text-white/50 hover:text-white/70">← back</a>
   </div>
 
   {% if error %}
@@ -13,18 +13,26 @@
   {% endif %}
 
   <form class="mt-6 space-y-4" method="post" action="/block/save" enctype="multipart/form-data">
-	<input type="hidden" name="block_id" value="{{ block.id }}" />
+	<input type="hidden" name="block_id" value="{{ block.get('id', 0) }}" />
 
 	{# чтобы если файл уже есть — он не пропал при Save без нового upload #}
-	<input type="hidden" name="file_path" value="{{ block.file_path if block.file_path is defined else '' }}" />
-	<input type="hidden" name="file_kind" value="{{ block.file_kind if block.file_kind is defined else '' }}" />
+	<input type="hidden" name="file_path" value="{{ block.get('file_path','') }}" />
+	<input type="hidden" name="file_kind" value="{{ block.get('file_kind','') }}" />
+	<input type="hidden" name="file_name" value="{{ block.get('file_name','') }}" />
+
+	{# чтобы gate не пропал при Save #}
+	<input type="hidden" name="gate_next_flow" value="{{ block.get('gate_next_flow','') }}" />
+	<input type="hidden" name="gate_button_text" value="{{ block.get('gate_button_text','') }}" />
+	<input type="hidden" name="gate_reminder_value" value="{{ block.get('gate_reminder_value', 0) }}" />
+	<input type="hidden" name="gate_reminder_unit" value="{{ block.get('gate_reminder_unit','hours') }}" />
+	<input type="hidden" name="gate_reminder_text" value="{{ block.get('gate_reminder_text','') }}" />
 
 	<div class="grid grid-cols-1 md:grid-cols-3 gap-3">
 	  <div>
 		<label class="text-xs text-white/50">flow</label>
 		<input
 		  name="flow"
-		  value="{{ block.flow }}"
+		  value="{{ block.get('flow','') }}"
 		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		/>
 	  </div>
@@ -34,7 +42,7 @@
 		<input
 		  name="position"
 		  type="number"
-		  value="{{ block.position }}"
+		  value="{{ block.get('position', 1) }}"
 		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		/>
 	  </div>
@@ -46,8 +54,9 @@
 		  name="type"
 		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		>
+		  {% set cur_type = block.get('type','text') %}
 		  {% for t in ["text","circle","video","buttons"] %}
-			<option value="{{ t }}" {% if block.type==t %}selected{% endif %}>{{ t }}</option>
+			<option value="{{ t }}" {% if cur_type == t %}selected{% endif %}>{{ t }}</option>
 		  {% endfor %}
 		</select>
 	  </div>
@@ -58,18 +67,19 @@
 		<label class="text-xs text-white/50">title (для video/buttons)</label>
 		<input
 		  name="title"
-		  value="{{ block.title }}"
+		  value="{{ block.get('title','') }}"
 		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		/>
 	  </div>
 
 	  <div>
-		<label class="text-xs text-white/50">delay_seconds</label>
+		<label class="text-xs text-white/50">delay</label>
+		<div class="text-[11px] text-white/35 -mt-0.5">можно писать дробные секунды (например 1.2)</div>
 		<input
 		  name="delay_seconds"
 		  type="number"
 		  step="0.1"
-		  value="{{ block.delay }}"
+		  value="{{ block.get('delay', 1.0) }}"
 		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		/>
 	  </div>
@@ -79,7 +89,7 @@
 		<input
 		  name="is_active"
 		  type="number"
-		  value="{{ block.is_active }}"
+		  value="{{ block.get('is_active', 1) }}"
 		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		/>
 	  </div>
@@ -92,7 +102,7 @@
 		name="text"
 		rows="6"
 		class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
-	  >{{ block.text }}</textarea>
+	  >{{ block.get('text','') }}</textarea>
 	</div>
 
 	<!-- MEDIA -->
@@ -101,15 +111,15 @@
 		<label class="text-xs text-white/50">circle_path (или загрузить файл)</label>
 		<input
 		  name="circle_path"
-		  value="{{ block.circle }}"
+		  value="{{ block.get('circle','') }}"
 		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		/>
 		<div class="mt-2">
 		  <input type="file" name="circle_file" class="text-sm text-white/70" />
 		</div>
 
-		{% if block.circle %}
-		  <div class="mt-2 text-[11px] text-white/45">current: {{ block.circle }}</div>
+		{% if block.get('circle') %}
+		  <div class="mt-2 text-[11px] text-white/45">current: {{ block.get('circle') }}</div>
 		{% endif %}
 	  </div>
 
@@ -117,13 +127,13 @@
 		<label class="text-xs text-white/50">video_url</label>
 		<input
 		  name="video_url"
-		  value="{{ block.video }}"
+		  value="{{ block.get('video','') }}"
 		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		/>
 	  </div>
 	</div>
 
-	<!-- ATTACHMENT (НОВОЕ) -->
+	<!-- ATTACHMENT -->
 	<div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
 	  <div class="flex items-center justify-between mb-3">
 		<div class="text-sm font-medium">Attachment</div>
@@ -135,32 +145,129 @@
 		  <label class="text-xs text-white/50">upload file</label>
 		  <input type="file" name="attach_file" class="block mt-2 text-sm text-white/70" />
 		  <div class="text-[11px] text-white/35 mt-2">
-			Если загрузишь — файл сохранится в <code>media/</code> и будет отправляться ботом в этом блоке (после правок в bot.py).
+			Если загрузишь — файл сохранится в <code>media/</code> и будет отправляться ботом в этом блоке.
 		  </div>
 		</div>
 
 		<div>
 		  <label class="text-xs text-white/50">current</label>
 		  <div class="mt-2 text-sm text-white/80">
-			{% if block.file_path is defined and block.file_path %}
-			  <div class="text-[11px] text-white/45">kind: {{ block.file_kind }}</div>
-			  <a class="text-white/80 underline" href="/{{ block.file_path }}" target="_blank">{{ block.file_path }}</a>
+			{% if block.get('file_path') %}
+			  <div class="text-[11px] text-white/45">kind: {{ block.get('file_kind','') }}</div>
+			  <a class="text-white/80 underline" href="{{ block.get('file_path') }}" target="_blank">{{ block.get('file_path') }}</a>
 			{% else %}
 			  <span class="text-white/35">—</span>
 			{% endif %}
 		  </div>
 
-		  {# очистка файла: просто отправим пустые значения в скрытые поля #}
 		  <div class="mt-3">
 			<button
 			  type="button"
 			  class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10"
-			  onclick="document.querySelector('input[name=file_path]').value=''; document.querySelector('input[name=file_kind]').value=''; alert('Attachment очищен. Нажми Save.');"
+			  onclick="clearAttachment()"
 			>
 			  Clear attachment
 			</button>
 		  </div>
 		</div>
+	  </div>
+	</div>
+
+	<!-- ✅ NEXT LESSON GATE -->
+	<div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+	  <div class="flex items-center justify-between mb-3">
+		<div class="text-sm font-medium">Next lesson gate</div>
+		<div class="text-xs text-white/40">кнопка “Готов…” + напоминание</div>
+	  </div>
+
+	  <div class="text-[11px] text-white/40 mb-4">
+		Если заполнить <b>Next flow</b> — бот после этого блока НЕ покажет следующий урок автоматически,
+		а покажет кнопку. По нажатию — запустит выбранный flow.
+	  </div>
+
+	  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+		<div>
+		  <label class="text-xs text-white/50">Next flow (что запускать после кнопки)</label>
+
+		  {% if flows is defined and flows %}
+			<select
+			  name="gate_next_flow"
+			  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+			>
+			  <option value="">— disabled —</option>
+			  {% for f in flows %}
+				<option value="{{ f }}" {% if block.get('gate_next_flow','') == f %}selected{% endif %}>{{ f }}</option>
+			  {% endfor %}
+			</select>
+		  {% else %}
+			<input
+			  name="gate_next_flow"
+			  value="{{ block.get('gate_next_flow','') }}"
+			  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+			  placeholder="например: day2"
+			/>
+			<div class="text-[11px] text-white/35 mt-1">
+			  (подсказка: чтобы был dropdown — передай <code>flows</code> в шаблон из crm.py)
+			</div>
+		  {% endif %}
+		</div>
+
+		<div>
+		  <label class="text-xs text-white/50">Button text</label>
+		  <input
+			name="gate_button_text"
+			value="{{ block.get('gate_button_text') or '✅ Готов к следующему уроку' }}"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		  />
+		</div>
+	  </div>
+
+	  <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+		<div>
+		  <label class="text-xs text-white/50">Reminder</label>
+		  <input
+			name="gate_reminder_value"
+			type="number"
+			min="0"
+			value="{{ block.get('gate_reminder_value', 0) }}"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+			placeholder="0"
+		  />
+		  <div class="text-[11px] text-white/35 mt-1">0 = без напоминания</div>
+		</div>
+
+		<div>
+		  <label class="text-xs text-white/50">Unit</label>
+		  {% set u = (block.get('gate_reminder_unit') or 'hours') %}
+		  <select
+			name="gate_reminder_unit"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		  >
+			<option value="minutes" {% if u=='minutes' %}selected{% endif %}>minutes</option>
+			<option value="hours" {% if u=='hours' %}selected{% endif %}>hours</option>
+			<option value="days" {% if u=='days' %}selected{% endif %}>days</option>
+		  </select>
+		</div>
+
+		<div>
+		  <label class="text-xs text-white/50">Reminder text (optional)</label>
+		  <input
+			name="gate_reminder_text"
+			value="{{ block.get('gate_reminder_text','') }}"
+			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+			placeholder="Например: Ты готов продолжить? 🙂"
+		  />
+		</div>
+	  </div>
+
+	  <div class="mt-3">
+		<button
+		  type="button"
+		  class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10"
+		  onclick="clearGate()"
+		>
+		  Disable gate
+		</button>
 	  </div>
 	</div>
 
@@ -176,7 +283,7 @@
 		  <label class="text-xs text-white/50">Button 1 text</label>
 		  <input
 			name="btn1_text"
-			value="{{ block.btn1_text }}"
+			value="{{ block.get('btn1_text','') }}"
 			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
 			placeholder="Например: Перейти на сайт"
 		  />
@@ -185,7 +292,7 @@
 		  <label class="text-xs text-white/50">Button 1 url</label>
 		  <input
 			name="btn1_url"
-			value="{{ block.btn1_url }}"
+			value="{{ block.get('btn1_url','') }}"
 			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
 			placeholder="https://..."
 		  />
@@ -195,7 +302,7 @@
 		  <label class="text-xs text-white/50">Button 2 text</label>
 		  <input
 			name="btn2_text"
-			value="{{ block.btn2_text }}"
+			value="{{ block.get('btn2_text','') }}"
 			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
 			placeholder="(опционально)"
 		  />
@@ -204,7 +311,7 @@
 		  <label class="text-xs text-white/50">Button 2 url</label>
 		  <input
 			name="btn2_url"
-			value="{{ block.btn2_url }}"
+			value="{{ block.get('btn2_url','') }}"
 			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
 			placeholder="https://..."
 		  />
@@ -214,7 +321,7 @@
 		  <label class="text-xs text-white/50">Button 3 text</label>
 		  <input
 			name="btn3_text"
-			value="{{ block.btn3_text }}"
+			value="{{ block.get('btn3_text','') }}"
 			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
 			placeholder="(опционально)"
 		  />
@@ -223,7 +330,7 @@
 		  <label class="text-xs text-white/50">Button 3 url</label>
 		  <input
 			name="btn3_url"
-			value="{{ block.btn3_url }}"
+			value="{{ block.get('btn3_url','') }}"
 			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10"
 			placeholder="https://..."
 		  />
@@ -236,7 +343,7 @@
 		  name="buttons_json"
 		  rows="4"
 		  class="w-full mt-2 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
-		>{{ block.buttons_json if block.buttons_json is defined and block.buttons_json else block.buttons }}</textarea>
+		>{{ block.get('buttons_json','') or block.get('buttons','') }}</textarea>
 		<div class="text-[11px] text-white/35 mt-1">
 		  Если заполнено — будет использован JSON. Иначе берём кнопки сверху.
 		</div>
@@ -250,14 +357,43 @@
 
   <script>
 	function toggleSections() {
-	  // показываем кнопки всегда и НЕ выключаем поля
-	  document.getElementById("secButtons").style.display = "block";
-	  document.getElementById("secButtons").style.opacity = "1";
-	  document.getElementById("secButtons").style.pointerEvents = "auto";
-	  document.querySelectorAll("#secButtons input, #secButtons textarea").forEach(i => i.disabled = false);
+	  const secButtons = document.getElementById("secButtons");
+	  if (secButtons) {
+		secButtons.style.display = "block";
+		secButtons.style.opacity = "1";
+		secButtons.style.pointerEvents = "auto";
+		secButtons.querySelectorAll("input, textarea").forEach(i => i.disabled = false);
+	  }
 	}
 
-	document.getElementById("typeSel").addEventListener("change", toggleSections);
+	function clearAttachment() {
+	  const fp = document.querySelector('input[name="file_path"]');
+	  const fk = document.querySelector('input[name="file_kind"]');
+	  const fn = document.querySelector('input[name="file_name"]');
+	  if (fp) fp.value = '';
+	  if (fk) fk.value = '';
+	  if (fn) fn.value = '';
+	  alert('Attachment очищен. Нажми Save.');
+	}
+
+	function clearGate() {
+	  const nf = document.querySelector('[name="gate_next_flow"]');
+	  const bt = document.querySelector('[name="gate_button_text"]');
+	  const rv = document.querySelector('[name="gate_reminder_value"]');
+	  const ru = document.querySelector('[name="gate_reminder_unit"]');
+	  const rt = document.querySelector('[name="gate_reminder_text"]');
+
+	  if (nf) nf.value = '';
+	  if (bt) bt.value = '';
+	  if (rv) rv.value = '0';
+	  if (ru) ru.value = 'hours';
+	  if (rt) rt.value = '';
+
+	  alert('Gate отключён. Нажми Save.');
+	}
+
+	const typeSel = document.getElementById("typeSel");
+	if (typeSel) typeSel.addEventListener("change", toggleSections);
 	toggleSections();
   </script>
 {% endblock %}

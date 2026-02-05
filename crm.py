@@ -42,12 +42,11 @@ async def startup():
 		if not flows:
 			await run_seed()
 	except Exception:
-		# если seed упадёт — CRM всё равно поднимется
 		pass
 
 
 # ─────────────────────────────────────────────────────────────
-# Helpers for triggers
+# Helpers
 
 def _unit_to_seconds(unit: str) -> int:
 	u = (unit or "").strip().lower()
@@ -58,9 +57,9 @@ def _unit_to_seconds(unit: str) -> int:
 	return 86400  # days default
 
 
-def _seconds_to_value_unit(total_seconds: int, preferred_unit: str = "") -> tuple[int, str]:
+def _seconds_to_value_unit(total_seconds: int, preferred_unit: str = "days") -> tuple[int, str]:
 	s = int(total_seconds or 0)
-	p = (preferred_unit or "").strip().lower()
+	p = (preferred_unit or "days").strip().lower()
 	if p not in ("minutes", "hours", "days"):
 		p = "days"
 
@@ -292,9 +291,12 @@ async def new_block_page(request: Request, flow: str):
 		"buttons": "",
 		"is_active": 1,
 		"delay": 1.0,
+
 		"file_path": "",
 		"file_kind": "",
 		"file_name": "",
+
+		# UI buttons
 		"btn1_text": "",
 		"btn1_url": "",
 		"btn2_text": "",
@@ -302,6 +304,13 @@ async def new_block_page(request: Request, flow: str):
 		"btn3_text": "",
 		"btn3_url": "",
 		"buttons_json": "",
+
+		# ✅ GATE defaults
+		"gate_next_flow": "",
+		"gate_button_text": "✅ Готов к следующему уроку",
+		"gate_reminder_value": 0,
+		"gate_reminder_unit": "hours",
+		"gate_reminder_text": "",
 	}
 
 	return templates.TemplateResponse(
@@ -316,6 +325,7 @@ async def edit_block_page(request: Request, block_id: int):
 	if not block:
 		return RedirectResponse("/", status_code=302)
 
+	# распарсим кнопки
 	btns = []
 	try:
 		if block.get("buttons"):
@@ -333,6 +343,16 @@ async def edit_block_page(request: Request, block_id: int):
 			block[f"btn{i+1}_url"] = b.get("url", "")
 
 	block["buttons_json"] = block.get("buttons", "")
+
+	# ✅ GATE: секунд -> value+unit для UI
+	rem_sec = int(block.get("gate_reminder_seconds") or 0)
+	val, unit = _seconds_to_value_unit(rem_sec, preferred_unit="hours")
+	block["gate_reminder_value"] = int(val)
+	block["gate_reminder_unit"] = unit
+
+	# дефолты, если пусто
+	if not (block.get("gate_button_text") or "").strip():
+		block["gate_button_text"] = "✅ Готов к следующему уроку"
 
 	return templates.TemplateResponse(
 		"edit.html",
@@ -359,6 +379,7 @@ async def save_block(
 	file_kind: str = Form(""),
 	file_name: str = Form(""),
 
+	# UI buttons
 	btn1_text: str = Form(""),
 	btn1_url: str = Form(""),
 	btn2_text: str = Form(""),
@@ -367,8 +388,16 @@ async def save_block(
 	btn3_url: str = Form(""),
 	buttons_json: str = Form(""),
 
+	# uploads
 	circle_file: UploadFile | None = File(None),
 	attach_file: UploadFile | None = File(None),
+
+	# ✅ GATE fields (из формы)
+	gate_next_flow: str = Form(""),
+	gate_button_text: str = Form(""),
+	gate_reminder_value: int = Form(0),
+	gate_reminder_unit: str = Form("hours"),
+	gate_reminder_text: str = Form(""),
 ):
 	flow = (flow or "").strip()
 	if not flow:
@@ -382,7 +411,6 @@ async def save_block(
 		fname = f"{uuid.uuid4().hex}{ext}"
 		with open(os.path.join("media", fname), "wb") as f:
 			f.write(await circle_file.read())
-		# ВАЖНО: /media/... чтобы бот мог собрать URL
 		circle_path = f"/media/{fname}"
 
 	# ✅ upload attachment
@@ -394,7 +422,6 @@ async def save_block(
 		with open(os.path.join("media", fname), "wb") as f:
 			f.write(await attach_file.read())
 
-		# ВАЖНО: /media/... чтобы бот мог собрать URL
 		file_path = f"/media/{fname}"
 		file_name = orig_name
 
@@ -422,6 +449,20 @@ async def save_block(
 	elif buttons:
 		buttons_final = json.dumps(buttons, ensure_ascii=False)
 
+	# ✅ gate normalize
+	gate_next_flow = (gate_next_flow or "").strip()
+	gate_button_text = (gate_button_text or "").strip()
+	gate_reminder_value = int(gate_reminder_value or 0)
+	if gate_reminder_value < 0:
+		gate_reminder_value = 0
+
+	gate_reminder_unit = (gate_reminder_unit or "hours").strip().lower()
+	if gate_reminder_unit not in ("minutes", "hours", "days"):
+		gate_reminder_unit = "hours"
+
+	gate_reminder_seconds = gate_reminder_value * _unit_to_seconds(gate_reminder_unit)
+	gate_reminder_text = (gate_reminder_text or "").strip()
+
 	data = {
 		"flow": flow,
 		"position": int(position),
@@ -433,9 +474,16 @@ async def save_block(
 		"buttons": buttons_final,
 		"is_active": int(is_active),
 		"delay": float(delay_seconds),
+
 		"file_path": (file_path or "").strip(),
 		"file_kind": (file_kind or "").strip(),
 		"file_name": (file_name or "").strip(),
+
+		# ✅ GATE persist
+		"gate_next_flow": gate_next_flow,
+		"gate_button_text": gate_button_text,
+		"gate_reminder_seconds": int(gate_reminder_seconds),
+		"gate_reminder_text": gate_reminder_text,
 	}
 
 	if int(block_id) == 0:

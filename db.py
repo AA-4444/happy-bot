@@ -7,7 +7,6 @@ import asyncpg
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-# pool is shared inside one process (CRM process and BOT process each will have its own pool)
 _pool: Optional[asyncpg.Pool] = None
 
 
@@ -16,7 +15,6 @@ async def get_pool() -> asyncpg.Pool:
 	if _pool is None:
 		if not DATABASE_URL:
 			raise RuntimeError("DATABASE_URL env var is not set. Add it in Railway Variables.")
-		# Railway often uses ssl; asyncpg handles it via URL params.
 		_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
 	return _pool
 
@@ -33,10 +31,20 @@ async def _column_exists(conn: asyncpg.Connection, table: str, column: str) -> b
 	return await conn.fetchval(q, table, column) is not None
 
 
+async def _table_exists(conn: asyncpg.Connection, table: str) -> bool:
+	q = """
+	SELECT 1
+	FROM information_schema.tables
+	WHERE table_schema='public' AND table_name=$1
+	LIMIT 1
+	"""
+	return await conn.fetchval(q, table) is not None
+
+
 async def init_db():
 	pool = await get_pool()
 	async with pool.acquire() as conn:
-		# --- USERS (служебная) ---
+		# --- USERS ---
 		await conn.execute("""
 		CREATE TABLE IF NOT EXISTS users (
 			user_id BIGINT PRIMARY KEY,
@@ -73,7 +81,13 @@ async def init_db():
 			-- attachments
 			file_path TEXT DEFAULT '',
 			file_kind TEXT DEFAULT '',
-			file_name TEXT DEFAULT ''
+			file_name TEXT DEFAULT '',
+
+			-- GATE
+			gate_next_flow TEXT DEFAULT '',
+			gate_button_text TEXT DEFAULT '',
+			gate_reminder_seconds BIGINT NOT NULL DEFAULT 0,
+			gate_reminder_text TEXT DEFAULT ''
 		);
 		""")
 
@@ -88,13 +102,12 @@ async def init_db():
 		);
 		""")
 
-		# unique for upsert
 		await conn.execute("""
 		CREATE UNIQUE INDEX IF NOT EXISTS ux_jobs_user_flow
 		ON jobs(user_id, flow);
 		""")
 
-		# --- BOT USERS (АНАЛИТИКА) ---
+		# --- BOT USERS ---
 		await conn.execute("""
 		CREATE TABLE IF NOT EXISTS bot_users (
 			user_id BIGINT PRIMARY KEY,
@@ -116,22 +129,45 @@ async def init_db():
 		);
 		""")
 
-		# ---------------- MIGRATIONS (safe add columns) ----------------
+		# --- USER GATES ---
+		await conn.execute("""
+		CREATE TABLE IF NOT EXISTS user_gates (
+			user_id BIGINT NOT NULL,
+			block_id INTEGER NOT NULL,
+			pressed_at INTEGER NOT NULL,
+			PRIMARY KEY (user_id, block_id)
+		);
+		""")
 
-		# flows.sort_order
+		# ---------------- MIGRATIONS ----------------
+
 		if not await _column_exists(conn, "flows", "sort_order"):
 			await conn.execute("ALTER TABLE flows ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;")
 
-		# content_blocks additions
 		for col, ddl in [
 			("delay_seconds", "ALTER TABLE content_blocks ADD COLUMN delay_seconds DOUBLE PRECISION DEFAULT 1.0;"),
 			("title", "ALTER TABLE content_blocks ADD COLUMN title TEXT DEFAULT '';"),
 			("file_path", "ALTER TABLE content_blocks ADD COLUMN file_path TEXT DEFAULT '';"),
 			("file_kind", "ALTER TABLE content_blocks ADD COLUMN file_kind TEXT DEFAULT '';"),
 			("file_name", "ALTER TABLE content_blocks ADD COLUMN file_name TEXT DEFAULT '';"),
+
+			("gate_next_flow", "ALTER TABLE content_blocks ADD COLUMN gate_next_flow TEXT DEFAULT '';"),
+			("gate_button_text", "ALTER TABLE content_blocks ADD COLUMN gate_button_text TEXT DEFAULT '';"),
+			("gate_reminder_seconds", "ALTER TABLE content_blocks ADD COLUMN gate_reminder_seconds BIGINT NOT NULL DEFAULT 0;"),
+			("gate_reminder_text", "ALTER TABLE content_blocks ADD COLUMN gate_reminder_text TEXT DEFAULT '';"),
 		]:
 			if not await _column_exists(conn, "content_blocks", col):
 				await conn.execute(ddl)
+
+		if not await _table_exists(conn, "user_gates"):
+			await conn.execute("""
+			CREATE TABLE IF NOT EXISTS user_gates (
+				user_id BIGINT NOT NULL,
+				block_id INTEGER NOT NULL,
+				pressed_at INTEGER NOT NULL,
+				PRIMARY KEY (user_id, block_id)
+			);
+			""")
 
 		# restore flows if empty
 		cnt = await conn.fetchval("SELECT COUNT(*) FROM flows;")
@@ -229,7 +265,7 @@ async def get_users(limit: int = 500):
 	]
 
 
-# ===================== FLOW TRIGGERS (CRM) =====================
+# ===================== FLOW TRIGGERS =====================
 
 async def get_flow_triggers() -> List[Dict]:
 	pool = await get_pool()
@@ -282,6 +318,41 @@ async def delete_flow_trigger(flow: str) -> None:
 		await conn.execute("DELETE FROM flow_triggers WHERE flow=$1;", flow)
 
 
+# ===================== GATES (pressed state) =====================
+
+async def mark_gate_pressed(user_id: int, block_id: int) -> None:
+	now = int(time.time())
+	pool = await get_pool()
+	async with pool.acquire() as conn:
+		await conn.execute("""
+		INSERT INTO user_gates(user_id, block_id, pressed_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, block_id) DO UPDATE SET
+			pressed_at=EXCLUDED.pressed_at;
+		""", int(user_id), int(block_id), now)
+
+
+async def is_gate_pressed(user_id: int, block_id: int) -> bool:
+	pool = await get_pool()
+	async with pool.acquire() as conn:
+		v = await conn.fetchval("""
+		SELECT 1
+		FROM user_gates
+		WHERE user_id=$1 AND block_id=$2
+		LIMIT 1;
+		""", int(user_id), int(block_id))
+	return v is not None
+
+
+async def unpress_gate(user_id: int, block_id: int) -> None:
+	pool = await get_pool()
+	async with pool.acquire() as conn:
+		await conn.execute("""
+		DELETE FROM user_gates
+		WHERE user_id=$1 AND block_id=$2;
+		""", int(user_id), int(block_id))
+
+
 # ===================== JOBS =====================
 
 async def upsert_job(user_id: int, flow: str, run_at_ts: int) -> None:
@@ -328,6 +399,23 @@ async def mark_job_done(job_id: int) -> None:
 	pool = await get_pool()
 	async with pool.acquire() as conn:
 		await conn.execute("UPDATE jobs SET is_done=1 WHERE id=$1;", int(job_id))
+
+
+async def mark_job_done_by_user_flow(user_id: int, flow: str) -> None:
+	"""
+	Нужно чтобы “отменить” напоминание по ключу (user_id, flow),
+	потому что jobs у нас unique по (user_id, flow).
+	"""
+	flow = (flow or "").strip()
+	if not flow:
+		return
+	pool = await get_pool()
+	async with pool.acquire() as conn:
+		await conn.execute("""
+		UPDATE jobs
+		SET is_done=1
+		WHERE user_id=$1 AND flow=$2;
+		""", int(user_id), flow)
 
 
 # ===================== FLOWS =====================
@@ -403,7 +491,8 @@ async def get_blocks(flow: str) -> List[Dict]:
 				title, text,
 				circle_path, video_url, buttons_json,
 				is_active, delay_seconds,
-				file_path, file_kind, file_name
+				file_path, file_kind, file_name,
+				gate_next_flow, gate_button_text, gate_reminder_seconds, gate_reminder_text
 			FROM content_blocks
 			WHERE flow=$1
 			ORDER BY position ASC;
@@ -422,9 +511,15 @@ async def get_blocks(flow: str) -> List[Dict]:
 			"buttons": r["buttons_json"] or "",
 			"is_active": int(r["is_active"] or 0),
 			"delay": float(r["delay_seconds"] or 1.0),
+
 			"file_path": r["file_path"] or "",
 			"file_kind": r["file_kind"] or "",
 			"file_name": r["file_name"] or "",
+
+			"gate_next_flow": r.get("gate_next_flow") or "",
+			"gate_button_text": r.get("gate_button_text") or "",
+			"gate_reminder_seconds": int(r.get("gate_reminder_seconds") or 0),
+			"gate_reminder_text": r.get("gate_reminder_text") or "",
 		}
 		for r in rows
 	]
@@ -439,7 +534,8 @@ async def get_block(block_id: int) -> Optional[Dict]:
 				title, text,
 				circle_path, video_url, buttons_json,
 				is_active, delay_seconds,
-				file_path, file_kind, file_name
+				file_path, file_kind, file_name,
+				gate_next_flow, gate_button_text, gate_reminder_seconds, gate_reminder_text
 			FROM content_blocks
 			WHERE id=$1;
 		""", int(block_id))
@@ -459,9 +555,15 @@ async def get_block(block_id: int) -> Optional[Dict]:
 		"buttons": r["buttons_json"] or "",
 		"is_active": int(r["is_active"] or 0),
 		"delay": float(r["delay_seconds"] or 1.0),
+
 		"file_path": r["file_path"] or "",
 		"file_kind": r["file_kind"] or "",
 		"file_name": r["file_name"] or "",
+
+		"gate_next_flow": r.get("gate_next_flow") or "",
+		"gate_button_text": r.get("gate_button_text") or "",
+		"gate_reminder_seconds": int(r.get("gate_reminder_seconds") or 0),
+		"gate_reminder_text": r.get("gate_reminder_text") or "",
 	}
 
 
@@ -471,8 +573,9 @@ async def create_block(data: Dict) -> None:
 		await conn.execute("""
 			INSERT INTO content_blocks
 			(flow, position, type, title, text, circle_path, video_url, buttons_json,
-			 is_active, delay_seconds, file_path, file_kind, file_name)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13);
+			 is_active, delay_seconds, file_path, file_kind, file_name,
+			 gate_next_flow, gate_button_text, gate_reminder_seconds, gate_reminder_text)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17);
 		""",
 			data["flow"], int(data["position"]), data["type"],
 			data.get("title", ""), data.get("text", ""),
@@ -482,6 +585,10 @@ async def create_block(data: Dict) -> None:
 			data.get("file_path", ""),
 			data.get("file_kind", ""),
 			data.get("file_name", ""),
+			data.get("gate_next_flow", ""),
+			data.get("gate_button_text", ""),
+			int(data.get("gate_reminder_seconds", 0) or 0),
+			data.get("gate_reminder_text", ""),
 		)
 
 
@@ -493,8 +600,9 @@ async def update_block(block_id: int, data: Dict) -> None:
 			SET flow=$1, position=$2, type=$3,
 				title=$4, text=$5, circle_path=$6, video_url=$7, buttons_json=$8,
 				is_active=$9, delay_seconds=$10,
-				file_path=$11, file_kind=$12, file_name=$13
-			WHERE id=$14;
+				file_path=$11, file_kind=$12, file_name=$13,
+				gate_next_flow=$14, gate_button_text=$15, gate_reminder_seconds=$16, gate_reminder_text=$17
+			WHERE id=$18;
 		""",
 			data["flow"], int(data["position"]), data["type"],
 			data.get("title", ""), data.get("text", ""),
@@ -504,6 +612,10 @@ async def update_block(block_id: int, data: Dict) -> None:
 			data.get("file_path", ""),
 			data.get("file_kind", ""),
 			data.get("file_name", ""),
+			data.get("gate_next_flow", ""),
+			data.get("gate_button_text", ""),
+			int(data.get("gate_reminder_seconds", 0) or 0),
+			data.get("gate_reminder_text", ""),
 			int(block_id),
 		)
 

@@ -19,17 +19,22 @@ from aiogram.types import (
 )
 
 from db import (
-	init_db, get_blocks,
+	init_db, get_blocks, get_block,
 	inc_start, inc_message,
 	upsert_job, fetch_due_jobs, mark_job_done,
 	get_flow_triggers,
+
+	# ✅ gate pressed state + cancel reminder job
+	mark_gate_pressed,
+	is_gate_pressed,
+	mark_job_done_by_user_flow,
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
 	raise RuntimeError("BOT_TOKEN is not set")
 
-# ✅ базовый URL CRM, чтобы отдавать /media/... наружу
+# базовый URL CRM, чтобы отдавать /media/... наружу
 CRM_BASE_URL = (os.getenv("CRM_BASE_URL") or "").strip().rstrip("/")
 
 SUPPORT_USERNAME = "@client_support"
@@ -140,12 +145,6 @@ def _resolve_local_path(file_path: str) -> str:
 
 
 def _to_public_url(p: str) -> str:
-	"""
-	p может быть:
-	- 'http(s)://...' -> возвращаем как есть
-	- '/media/xxx.mp4' -> склеиваем с CRM_BASE_URL
-	- 'media/xxx.mp4'  -> тоже приводим к '/media/xxx.mp4' и склеиваем
-	"""
 	p = (p or "").strip()
 	if not p:
 		return ""
@@ -174,7 +173,6 @@ def _normalize_kind(kind: str, file_path: str) -> str:
 	if k in ("video", "audio", "document", "photo"):
 		return k
 
-	# если CRM не прислал — угадаем по расширению
 	return _guess_kind_from_ext(file_path)
 
 
@@ -183,7 +181,6 @@ def _ensure_filename_with_ext(file_name: str, file_path: str) -> str:
 	if not fn:
 		fn = os.path.basename((file_path or "").strip()) or "file"
 
-	# если нет расширения — добавим из file_path (важно для PDF)
 	if "." not in fn:
 		ext = os.path.splitext(file_path)[1]
 		if ext:
@@ -204,11 +201,11 @@ async def send_attachment(
 	kind = _normalize_kind(file_kind, file_path)
 	fn = _ensure_filename_with_ext(file_name, file_path)
 
-	# ✅ 1) отправка по URL (Railway)
+	# 1) URL (Railway)
 	url = _to_public_url(file_path)
 	if url:
 		try:
-			input_file = URLInputFile(url, filename=fn)  # ✅ ВОТ ТУТ ФИКС
+			input_file = URLInputFile(url, filename=fn)
 			if kind == "photo":
 				await bot.send_photo(chat_id, photo=input_file)
 			elif kind == "video":
@@ -221,19 +218,17 @@ async def send_attachment(
 		except Exception:
 			pass
 
-	# ✅ 2) fallback: локальный файл
+	# 2) local fallback
 	abs_path = _resolve_local_path(file_path)
 	if not abs_path:
 		await bot.send_message(chat_id, f"⚠️ Файл не найден: <code>{file_path}</code>")
 		return
 
-	# подстрахуемся по расширению
 	kind = kind or _guess_kind_from_ext(abs_path)
 	if not fn:
 		fn = os.path.basename(abs_path)
 
 	f = FSInputFile(abs_path, filename=fn)
-
 	try:
 		if kind == "photo":
 			await bot.send_photo(chat_id, photo=f)
@@ -248,10 +243,6 @@ async def send_attachment(
 
 
 async def send_circle(chat_id: int, circle_path: str) -> None:
-	"""
-	Кружок — это video_note. Для Railway должен быть URL.
-	Локально тоже поддержим.
-	"""
 	p = (circle_path or "").strip()
 	if not p:
 		return
@@ -273,6 +264,29 @@ async def send_circle(chat_id: int, circle_path: str) -> None:
 		await bot.send_video_note(chat_id, video_note=FSInputFile(abs_path, filename="circle.mp4"))
 	except Exception:
 		await bot.send_message(chat_id, f"⚠️ Не удалось отправить кружок: <code>{p}</code>")
+
+
+# ─────────────────────────────────────────────────────────────
+# GATE helpers
+
+def _gate_cb(user_id: int, block_id: int, next_flow: str) -> str:
+	return f"gate:{user_id}:{block_id}:{next_flow}"
+
+
+def _job_flow(flow: str) -> str:
+	return f"flow:{(flow or '').strip()}"
+
+
+def _job_gate(block_id: int, next_flow: str) -> str:
+	return f"gate:{int(block_id)}:{(next_flow or '').strip()}"
+
+
+async def _schedule_gate_reminder(user_id: int, block_id: int, next_flow: str, seconds: int) -> None:
+	seconds = int(seconds or 0)
+	if seconds <= 0:
+		return
+	run_at = int(time.time()) + seconds
+	await upsert_job(int(user_id), _job_gate(block_id, next_flow), run_at)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -331,7 +345,35 @@ async def render_flow(chat_id: int, flow: str):
 		if file_path:
 			await send_attachment(chat_id, file_path, file_kind, file_name)
 
-		# 3) delay
+		# 3) ✅ GATE: если настроено — показываем кнопку и стопаем flow
+		next_flow = (block.get("gate_next_flow") or "").strip()
+		if next_flow:
+			btn_text = (block.get("gate_button_text") or "").strip() or "✅ Готов к следующему уроку"
+			rem_sec = int(block.get("gate_reminder_seconds") or 0)
+
+			block_id = int(block.get("id") or 0)
+
+			# планируем напоминание, если надо
+			if rem_sec > 0 and block_id > 0:
+				await _schedule_gate_reminder(chat_id, block_id, next_flow, rem_sec)
+
+			await bot.send_message(
+				chat_id,
+				"",
+				reply_markup=InlineKeyboardMarkup(
+					inline_keyboard=[[
+						InlineKeyboardButton(
+							text=btn_text,
+							callback_data=_gate_cb(chat_id, block_id, next_flow)
+						)
+					]]
+				)
+			)
+
+			# ✅ стопаем выполнение flow, пока юзер не нажмёт
+			return
+
+		# 4) delay
 		if delay > 0:
 			await asyncio.sleep(delay)
 
@@ -359,7 +401,7 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 			if offset_seconds < 0:
 				continue
 
-			await upsert_job(user_id, flow, now + offset_seconds)
+			await upsert_job(user_id, _job_flow(flow), now + offset_seconds)
 			any_set = True
 		except Exception:
 			continue
@@ -369,8 +411,8 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 
 async def schedule_fallback_day2_day3(user_id: int) -> None:
 	now = int(time.time())
-	await upsert_job(user_id, "day2", now + 24 * 3600)
-	await upsert_job(user_id, "day3", now + 48 * 3600)
+	await upsert_job(user_id, _job_flow("day2"), now + 24 * 3600)
+	await upsert_job(user_id, _job_flow("day3"), now + 48 * 3600)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -384,12 +426,47 @@ async def jobs_loop():
 				for job in due:
 					jid = job["id"]
 					uid = job["user_id"]
-					flow = job["flow"]
+					job_flow = (job["flow"] or "").strip()
 
 					try:
-						await render_flow(uid, flow)
+						# обычный flow job
+						if job_flow.startswith("flow:"):
+							flow = job_flow.split(":", 1)[1].strip()
+							if flow:
+								await render_flow(uid, flow)
+
+						# ✅ gate reminder (only if NOT pressed)
+						elif job_flow.startswith("gate:"):
+							# формат: gate:<block_id>:<next_flow>
+							parts = job_flow.split(":", 2)
+							if len(parts) == 3:
+								block_id = int(parts[1])
+								next_flow = parts[2].strip()
+
+								# если кнопку уже нажали — не шлём напоминание
+								if block_id > 0 and await is_gate_pressed(uid, block_id):
+									continue
+
+								# текст напоминания — из блока (если есть), иначе дефолт
+								text = "Напоминание: нажми кнопку, чтобы перейти к следующему уроку 👇"
+								try:
+									b = await get_block(block_id)
+									if b:
+										custom = (b.get("gate_reminder_text") or "").strip()
+										if custom:
+											text = custom
+								except Exception:
+									pass
+
+								await bot.send_message(uid, text)
+
+						else:
+							# backward compatibility: если в базе лежит просто "day2"
+							await render_flow(uid, job_flow)
+
 					finally:
 						await mark_job_done(jid)
+
 			except Exception:
 				pass
 
@@ -483,6 +560,40 @@ async def cb_lesson(call: CallbackQuery):
 	await inc_message(call.from_user.id, call.from_user.username or "")
 	flow = call.data.split(":", 1)[1]
 	await render_flow(call.from_user.id, flow)
+
+
+# ✅ обработчик gate-кнопки (фиксируем нажатие + отменяем reminder job)
+@dp.callback_query(F.data.startswith("gate:"))
+async def cb_gate_next(call: CallbackQuery):
+	try:
+		# gate:<user_id>:<block_id>:<next_flow>
+		_, uid_s, block_id_s, next_flow = call.data.split(":", 3)
+		target_uid = int(uid_s)
+		block_id = int(block_id_s)
+	except Exception:
+		await call.answer("Ошибка кнопки", show_alert=True)
+		return
+
+	# защита: только владелец может нажать
+	if call.from_user.id != target_uid:
+		await call.answer("Это не для тебя 🙂", show_alert=True)
+		return
+
+	# ✅ запомнить, что нажал
+	if block_id > 0:
+		try:
+			await mark_gate_pressed(target_uid, block_id)
+		except Exception:
+			pass
+
+	# ✅ погасить reminder-job, чтобы он не пришёл
+	try:
+		await mark_job_done_by_user_flow(target_uid, f"gate:{block_id}:{next_flow}")
+	except Exception:
+		pass
+
+	await call.answer("Ок! Поехали 🚀")
+	await render_flow(target_uid, next_flow)
 
 
 @dp.message()
