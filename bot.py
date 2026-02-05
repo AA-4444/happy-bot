@@ -357,7 +357,7 @@ async def _run_after_flow_actions(user_id: int, after_flow: str) -> None:
 			else:
 				# планируем отдельным job ключом
 				if action_id <= 0:
-					# если по какой-то причине нет id — падаем обратно на flow:key (хуже, но не теряем функционал)
+					# fallback (хуже, но не теряем функционал)
 					await upsert_job(int(user_id), _job_flow(target), now + delay)
 				else:
 					await upsert_job(int(user_id), _job_action(action_id), now + delay)
@@ -424,11 +424,17 @@ async def render_flow(chat_id: int, flow: str, _via_action: bool = False):
 		# 3) ✅ GATE: если настроено — показываем кнопку и стопаем flow
 		next_flow = (block.get("gate_next_flow") or "").strip()
 		if next_flow:
+			# ✅ ВАЖНО: delay должен применяться ДО показа кнопки.
+			# Иначе кнопка появится сразу (как у тебя сейчас).
+			if delay > 0:
+				await asyncio.sleep(delay)
+
 			btn_text = (block.get("gate_button_text") or "").strip() or "✅ Дальше"
 			prompt_text = (block.get("gate_prompt_text") or "").strip() or "👇 Нажми кнопку, чтобы перейти дальше"
 			rem_sec = int(block.get("gate_reminder_seconds") or 0)
 			block_id = int(block.get("id") or 0)
 
+			# напоминание запускаем ПОСЛЕ delay, когда кнопка реально показана
 			if rem_sec > 0 and block_id > 0:
 				await _schedule_gate_reminder(chat_id, block_id, next_flow, rem_sec)
 
@@ -446,12 +452,11 @@ async def render_flow(chat_id: int, flow: str, _via_action: bool = False):
 			)
 			return  # стопаем flow до нажатия
 
-		# 4) delay
+		# 4) обычный delay (для НЕ-gate блоков)
 		if delay > 0:
 			await asyncio.sleep(delay)
 
 	# ✅ flow дошёл до конца без gate — запускаем "after flow actions"
-	# (например: после day3 -> final через 5 минут)
 	await _run_after_flow_actions(chat_id, flow)
 
 
@@ -512,7 +517,6 @@ async def jobs_loop():
 
 						# 2) ✅ action job (после flow сценарий)
 						elif job_key.startswith("action:"):
-							# формат: action:<id>
 							aid_s = job_key.split(":", 1)[1].strip()
 							try:
 								aid = int(aid_s)
@@ -520,8 +524,6 @@ async def jobs_loop():
 								aid = 0
 
 							if aid > 0:
-								# найдём action по id (оптимально), но у нас интерфейс get_flow_actions(after_flow).
-								# поэтому просто вытянем все и найдём.
 								try:
 									actions = await get_flow_actions(None)
 								except Exception:
