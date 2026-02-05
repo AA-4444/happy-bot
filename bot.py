@@ -15,7 +15,7 @@ from aiogram.types import (
 	InlineKeyboardMarkup, InlineKeyboardButton,
 	CallbackQuery,
 	FSInputFile,
-	URLInputFile,  # ✅ важно
+	URLInputFile,
 )
 
 from db import (
@@ -98,7 +98,7 @@ def build_buttons_kb(buttons_json: Optional[str]) -> Optional[InlineKeyboardMark
 
 
 # ─────────────────────────────────────────────────────────────
-# Files
+# Files helpers
 
 def _guess_kind_from_ext(path: str) -> str:
 	ext = (os.path.splitext(path)[1] or "").lower()
@@ -158,10 +158,38 @@ def _to_public_url(p: str) -> str:
 
 	if p.startswith("/media/"):
 		if not CRM_BASE_URL:
-			return ""  # не можем собрать URL
+			return ""
 		return f"{CRM_BASE_URL}{p}"
 
 	return ""
+
+
+def _normalize_kind(kind: str, file_path: str) -> str:
+	k = (kind or "").strip().lower()
+
+	if k in ("image", "img", "photo", "picture"):
+		return "photo"
+	if k in ("file", "doc", "pdf"):
+		return "document"
+	if k in ("video", "audio", "document", "photo"):
+		return k
+
+	# если CRM не прислал — угадаем по расширению
+	return _guess_kind_from_ext(file_path)
+
+
+def _ensure_filename_with_ext(file_name: str, file_path: str) -> str:
+	fn = _safe_filename(file_name)
+	if not fn:
+		fn = os.path.basename((file_path or "").strip()) or "file"
+
+	# если нет расширения — добавим из file_path (важно для PDF)
+	if "." not in fn:
+		ext = os.path.splitext(file_path)[1]
+		if ext:
+			fn = fn + ext
+
+	return fn
 
 
 async def send_attachment(
@@ -173,20 +201,14 @@ async def send_attachment(
 	if not file_path:
 		return
 
-	# kind from CRM
-	kind = (file_kind or "").strip().lower()
-	if kind in ("image", "img", "photo", "picture"):
-		kind = "photo"
-	elif kind in ("file", "doc", "pdf"):
-		kind = "document"
+	kind = _normalize_kind(file_kind, file_path)
+	fn = _ensure_filename_with_ext(file_name, file_path)
 
-	fn = _safe_filename(file_name)
-
-	# ✅ 1) пробуем отправить по URL (Railway)
+	# ✅ 1) отправка по URL (Railway)
 	url = _to_public_url(file_path)
 	if url:
 		try:
-			input_file = URLInputFile(url)
+			input_file = URLInputFile(url, filename=fn)  # ✅ ВОТ ТУТ ФИКС
 			if kind == "photo":
 				await bot.send_photo(chat_id, photo=input_file)
 			elif kind == "video":
@@ -197,17 +219,16 @@ async def send_attachment(
 				await bot.send_document(chat_id, document=input_file)
 			return
 		except Exception:
-			# если URL не сработал — пойдём в локальный fallback
 			pass
 
-	# ✅ 2) fallback: локальный файл (старый вариант)
+	# ✅ 2) fallback: локальный файл
 	abs_path = _resolve_local_path(file_path)
 	if not abs_path:
 		await bot.send_message(chat_id, f"⚠️ Файл не найден: <code>{file_path}</code>")
 		return
 
+	# подстрахуемся по расширению
 	kind = kind or _guess_kind_from_ext(abs_path)
-
 	if not fn:
 		fn = os.path.basename(abs_path)
 
@@ -223,10 +244,7 @@ async def send_attachment(
 		else:
 			await bot.send_document(chat_id, document=f)
 	except Exception:
-		try:
-			await bot.send_document(chat_id, document=f)
-		except Exception:
-			await bot.send_message(chat_id, f"⚠️ Не удалось отправить файл: <code>{file_path}</code>")
+		await bot.send_message(chat_id, f"⚠️ Не удалось отправить файл: <code>{file_path}</code>")
 
 
 async def send_circle(chat_id: int, circle_path: str) -> None:
@@ -238,23 +256,21 @@ async def send_circle(chat_id: int, circle_path: str) -> None:
 	if not p:
 		return
 
-	# 1) URL
 	url = _to_public_url(p)
 	if url:
 		try:
-			await bot.send_video_note(chat_id, video_note=URLInputFile(url))
+			await bot.send_video_note(chat_id, video_note=URLInputFile(url, filename="circle.mp4"))
 			return
 		except Exception:
 			pass
 
-	# 2) локально
 	abs_path = _resolve_local_path(p)
 	if not abs_path:
 		await bot.send_message(chat_id, f"⚠️ Файл не найден: <code>{p}</code>")
 		return
 
 	try:
-		await bot.send_video_note(chat_id, video_note=FSInputFile(abs_path))
+		await bot.send_video_note(chat_id, video_note=FSInputFile(abs_path, filename="circle.mp4"))
 	except Exception:
 		await bot.send_message(chat_id, f"⚠️ Не удалось отправить кружок: <code>{p}</code>")
 
@@ -308,7 +324,7 @@ async def render_flow(chat_id: int, flow: str):
 			if block.get("text"):
 				await bot.send_message(chat_id, block["text"], reply_markup=kb)
 
-		# 2) attachment (+ file_name)
+		# 2) attachment
 		file_path = (block.get("file_path") or "").strip()
 		file_kind = (block.get("file_kind") or "").strip()
 		file_name = (block.get("file_name") or "").strip()
@@ -330,8 +346,8 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 		return False
 
 	now = int(time.time())
-
 	any_set = False
+
 	for tr in triggers:
 		try:
 			flow = (tr.get("flow") or "").strip()
@@ -374,7 +390,6 @@ async def jobs_loop():
 						await render_flow(uid, flow)
 					finally:
 						await mark_job_done(jid)
-
 			except Exception:
 				pass
 
