@@ -20,10 +20,10 @@ from db import (
 	get_blocks, get_block, create_block, update_block, delete_block,
 	next_position, swap_positions,
 	get_stats, get_users,
-
-	# triggers
 	get_flow_triggers, set_flow_trigger, delete_flow_trigger,
 )
+
+from seed import seed as run_seed  # ✅ добавили
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -35,6 +35,14 @@ app.mount("/media", StaticFiles(directory="media"), name="media")
 @app.on_event("startup")
 async def startup():
 	await init_db()
+	# ✅ автосид только если flows пустые (первый запуск на новой БД)
+	try:
+		flows = await get_flows()
+		if not flows:
+			await run_seed()
+	except Exception:
+		# если seed упадёт — CRM всё равно поднимется
+		pass
 
 
 # ─────────────────────────────────────────────────────────────
@@ -50,11 +58,6 @@ def _unit_to_seconds(unit: str) -> int:
 
 
 def _seconds_to_value_unit(total_seconds: int, preferred_unit: str = "") -> tuple[int, str]:
-	"""
-	Для UI: показываем value+unit.
-	ВАЖНО: если total_seconds == 0 — возвращаем preferred_unit (то, что юзер выбрал),
-	иначе будет "0 days" (твоя текущая проблема).
-	"""
 	s = int(total_seconds or 0)
 	p = (preferred_unit or "").strip().lower()
 	if p not in ("minutes", "hours", "days"):
@@ -100,7 +103,6 @@ async def index(request: Request):
 		enabled = int(t.get("is_active", 0) or 0)
 		offset_seconds = int(t.get("offset_seconds", 0) or 0)
 
-		# попробуем вытащить unit из offset_seconds; если 0 — оставим days (если нет явного)
 		val, unit = _seconds_to_value_unit(offset_seconds, preferred_unit="days")
 
 		triggers_map[flow] = {
@@ -124,7 +126,7 @@ async def index(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────
-# TRIGGERS routes (как в index.html)
+# TRIGGERS routes
 
 @app.post("/flow/{flow}/trigger")
 async def flow_trigger_save(
@@ -289,13 +291,9 @@ async def new_block_page(request: Request, flow: str):
 		"buttons": "",
 		"is_active": 1,
 		"delay": 1.0,
-
-		# attachments
 		"file_path": "",
 		"file_kind": "",
 		"file_name": "",
-
-		# UI buttons
 		"btn1_text": "",
 		"btn1_url": "",
 		"btn2_text": "",
@@ -356,12 +354,10 @@ async def save_block(
 	is_active: int = Form(1),
 	delay_seconds: float = Form(1.0),
 
-	# attachment meta (если руками)
 	file_path: str = Form(""),
 	file_kind: str = Form(""),
 	file_name: str = Form(""),
 
-	# UI buttons
 	btn1_text: str = Form(""),
 	btn1_url: str = Form(""),
 	btn2_text: str = Form(""),
@@ -370,7 +366,6 @@ async def save_block(
 	btn3_url: str = Form(""),
 	buttons_json: str = Form(""),
 
-	# uploads
 	circle_file: UploadFile | None = File(None),
 	attach_file: UploadFile | None = File(None),
 ):
@@ -380,7 +375,6 @@ async def save_block(
 
 	await create_flow(flow)
 
-	# upload circle
 	if circle_file and circle_file.filename:
 		ext = os.path.splitext(circle_file.filename)[1].lower() or ".mp4"
 		fname = f"{uuid.uuid4().hex}{ext}"
@@ -388,7 +382,6 @@ async def save_block(
 			f.write(await circle_file.read())
 		circle_path = f"media/{fname}"
 
-	# upload attachment
 	if attach_file and attach_file.filename:
 		orig_name = _safe_filename(attach_file.filename)
 		ext = os.path.splitext(orig_name)[1].lower()
@@ -398,7 +391,7 @@ async def save_block(
 			f.write(await attach_file.read())
 
 		file_path = f"media/{fname}"
-		file_name = orig_name  # ✅ сохраняем оригинальное имя
+		file_name = orig_name
 
 		ct = (attach_file.content_type or "").lower()
 		if ct.startswith("image/"):
@@ -410,7 +403,6 @@ async def save_block(
 		else:
 			file_kind = "document"
 
-	# buttons
 	buttons = []
 	for t, u in [(btn1_text, btn1_url), (btn2_text, btn2_url), (btn3_text, btn3_url)]:
 		t = (t or "").strip()
@@ -435,10 +427,9 @@ async def save_block(
 		"buttons": buttons_final,
 		"is_active": int(is_active),
 		"delay": float(delay_seconds),
-
 		"file_path": (file_path or "").strip(),
 		"file_kind": (file_kind or "").strip(),
-		"file_name": (file_name or "").strip(),  # ✅ новое поле
+		"file_name": (file_name or "").strip(),
 	}
 
 	if int(block_id) == 0:
