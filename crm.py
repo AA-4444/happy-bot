@@ -23,7 +23,7 @@ from db import (
 	get_flow_triggers, set_flow_trigger, delete_flow_trigger,
 )
 
-from seed import seed as run_seed  # ✅ добавили
+from seed import seed as run_seed  # ✅ автосид
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -35,6 +35,7 @@ app.mount("/media", StaticFiles(directory="media"), name="media")
 @app.on_event("startup")
 async def startup():
 	await init_db()
+
 	# ✅ автосид только если flows пустые (первый запуск на новой БД)
 	try:
 		flows = await get_flows()
@@ -375,13 +376,16 @@ async def save_block(
 
 	await create_flow(flow)
 
+	# ✅ upload circle
 	if circle_file and circle_file.filename:
 		ext = os.path.splitext(circle_file.filename)[1].lower() or ".mp4"
 		fname = f"{uuid.uuid4().hex}{ext}"
 		with open(os.path.join("media", fname), "wb") as f:
 			f.write(await circle_file.read())
-		circle_path = f"media/{fname}"
+		# ВАЖНО: /media/... чтобы бот мог собрать URL
+		circle_path = f"/media/{fname}"
 
+	# ✅ upload attachment
 	if attach_file and attach_file.filename:
 		orig_name = _safe_filename(attach_file.filename)
 		ext = os.path.splitext(orig_name)[1].lower()
@@ -390,7 +394,8 @@ async def save_block(
 		with open(os.path.join("media", fname), "wb") as f:
 			f.write(await attach_file.read())
 
-		file_path = f"media/{fname}"
+		# ВАЖНО: /media/... чтобы бот мог собрать URL
+		file_path = f"/media/{fname}"
 		file_name = orig_name
 
 		ct = (attach_file.content_type or "").lower()
@@ -403,6 +408,7 @@ async def save_block(
 		else:
 			file_kind = "document"
 
+	# buttons
 	buttons = []
 	for t, u in [(btn1_text, btn1_url), (btn2_text, btn2_url), (btn3_text, btn3_url)]:
 		t = (t or "").strip()

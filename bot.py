@@ -13,7 +13,9 @@ from aiogram.types import (
 	Message, BotCommand,
 	ReplyKeyboardMarkup, KeyboardButton,
 	InlineKeyboardMarkup, InlineKeyboardButton,
-	CallbackQuery, FSInputFile
+	CallbackQuery,
+	FSInputFile,
+	URLInputFile,  # ✅ важно
 )
 
 from db import (
@@ -26,6 +28,10 @@ from db import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
 	raise RuntimeError("BOT_TOKEN is not set")
+
+# ✅ базовый URL CRM, чтобы отдавать /media/... наружу
+CRM_BASE_URL = (os.getenv("CRM_BASE_URL") or "").strip().rstrip("/")
+
 SUPPORT_USERNAME = "@client_support"
 WEB_URL = "https://www.happi10.com"
 
@@ -105,7 +111,16 @@ def _guess_kind_from_ext(path: str) -> str:
 	return "document"
 
 
-def _resolve_path(file_path: str) -> str:
+def _safe_filename(name: str) -> str:
+	n = (name or "").strip()
+	if not n:
+		return ""
+	n = os.path.basename(n)
+	n = n.replace("\x00", "").replace("\n", " ").replace("\r", " ").strip()
+	return n
+
+
+def _resolve_local_path(file_path: str) -> str:
 	p = (file_path or "").strip()
 	if not p:
 		return ""
@@ -121,21 +136,32 @@ def _resolve_path(file_path: str) -> str:
 	if os.path.exists(cand2):
 		return cand2
 
-	return cand
+	return ""
 
 
-def _safe_filename(name: str) -> str:
+def _to_public_url(p: str) -> str:
 	"""
-	Telegram берёт имя файла из multipart filename.
-	Дадим нормальное имя (без путей), иначе будут uuid-цифры.
+	p может быть:
+	- 'http(s)://...' -> возвращаем как есть
+	- '/media/xxx.mp4' -> склеиваем с CRM_BASE_URL
+	- 'media/xxx.mp4'  -> тоже приводим к '/media/xxx.mp4' и склеиваем
 	"""
-	n = (name or "").strip()
-	if not n:
+	p = (p or "").strip()
+	if not p:
 		return ""
-	n = os.path.basename(n)
-	# очень грубо: убираем null/переводы строк
-	n = n.replace("\x00", "").replace("\n", " ").replace("\r", " ").strip()
-	return n
+
+	if p.startswith("http://") or p.startswith("https://"):
+		return p
+
+	if p.startswith("media/"):
+		p = "/" + p
+
+	if p.startswith("/media/"):
+		if not CRM_BASE_URL:
+			return ""  # не можем собрать URL
+		return f"{CRM_BASE_URL}{p}"
+
+	return ""
 
 
 async def send_attachment(
@@ -147,21 +173,41 @@ async def send_attachment(
 	if not file_path:
 		return
 
-	abs_path = _resolve_path(file_path)
-	if not abs_path or not os.path.exists(abs_path):
-		await bot.send_message(chat_id, f"⚠️ Файл не найден: <code>{file_path}</code>")
-		return
-
 	# kind from CRM
 	kind = (file_kind or "").strip().lower()
 	if kind in ("image", "img", "photo", "picture"):
 		kind = "photo"
 	elif kind in ("file", "doc", "pdf"):
 		kind = "document"
+
+	fn = _safe_filename(file_name)
+
+	# ✅ 1) пробуем отправить по URL (Railway)
+	url = _to_public_url(file_path)
+	if url:
+		try:
+			input_file = URLInputFile(url)
+			if kind == "photo":
+				await bot.send_photo(chat_id, photo=input_file)
+			elif kind == "video":
+				await bot.send_video(chat_id, video=input_file)
+			elif kind == "audio":
+				await bot.send_audio(chat_id, audio=input_file)
+			else:
+				await bot.send_document(chat_id, document=input_file)
+			return
+		except Exception:
+			# если URL не сработал — пойдём в локальный fallback
+			pass
+
+	# ✅ 2) fallback: локальный файл (старый вариант)
+	abs_path = _resolve_local_path(file_path)
+	if not abs_path:
+		await bot.send_message(chat_id, f"⚠️ Файл не найден: <code>{file_path}</code>")
+		return
+
 	kind = kind or _guess_kind_from_ext(abs_path)
 
-	# ✅ задаём нормальное имя файла (иначе будет uuid...)
-	fn = _safe_filename(file_name)
 	if not fn:
 		fn = os.path.basename(abs_path)
 
@@ -175,14 +221,42 @@ async def send_attachment(
 		elif kind == "audio":
 			await bot.send_audio(chat_id, audio=f)
 		else:
-			# PDF preview у Telegram клиент/сервер-стороны: появится только если Telegram смог сделать thumb.
-			# Мы гарантируем правильное расширение и имя файла.
 			await bot.send_document(chat_id, document=f)
 	except Exception:
 		try:
 			await bot.send_document(chat_id, document=f)
 		except Exception:
 			await bot.send_message(chat_id, f"⚠️ Не удалось отправить файл: <code>{file_path}</code>")
+
+
+async def send_circle(chat_id: int, circle_path: str) -> None:
+	"""
+	Кружок — это video_note. Для Railway должен быть URL.
+	Локально тоже поддержим.
+	"""
+	p = (circle_path or "").strip()
+	if not p:
+		return
+
+	# 1) URL
+	url = _to_public_url(p)
+	if url:
+		try:
+			await bot.send_video_note(chat_id, video_note=URLInputFile(url))
+			return
+		except Exception:
+			pass
+
+	# 2) локально
+	abs_path = _resolve_local_path(p)
+	if not abs_path:
+		await bot.send_message(chat_id, f"⚠️ Файл не найден: <code>{p}</code>")
+		return
+
+	try:
+		await bot.send_video_note(chat_id, video_note=FSInputFile(abs_path))
+	except Exception:
+		await bot.send_message(chat_id, f"⚠️ Не удалось отправить кружок: <code>{p}</code>")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -201,11 +275,7 @@ async def render_flow(chat_id: int, flow: str):
 
 		# 1) content
 		if t == "circle" and block.get("circle"):
-			try:
-				circle_path = _resolve_path(block["circle"])
-				await bot.send_video_note(chat_id, video_note=FSInputFile(circle_path))
-			except Exception:
-				await bot.send_message(chat_id, f"⚠️ Не удалось отправить кружок: <code>{block.get('circle','')}</code>")
+			await send_circle(chat_id, block.get("circle", ""))
 
 		elif t == "video" and block.get("video"):
 			title = (block.get("title") or "").strip() or "🎬 <b>Видео урок:</b>"
@@ -241,7 +311,7 @@ async def render_flow(chat_id: int, flow: str):
 		# 2) attachment (+ file_name)
 		file_path = (block.get("file_path") or "").strip()
 		file_kind = (block.get("file_kind") or "").strip()
-		file_name = (block.get("file_name") or "").strip()  # ✅ новое поле
+		file_name = (block.get("file_name") or "").strip()
 		if file_path:
 			await send_attachment(chat_id, file_path, file_kind, file_name)
 
