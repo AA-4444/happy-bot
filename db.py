@@ -41,6 +41,13 @@ async def _table_exists(conn: asyncpg.Connection, table: str) -> bool:
 	return await conn.fetchval(q, table) is not None
 
 
+def _norm_mode(mode: str) -> str:
+	m = (mode or "").strip().lower()
+	if m not in ("off", "manual", "auto"):
+		return "off"
+	return m
+
+
 async def init_db():
 	pool = await get_pool()
 	async with pool.acquire() as conn:
@@ -139,6 +146,14 @@ async def init_db():
 		);
 		""")
 
+		# ✅ FLOW MODES (off/manual/auto)
+		await conn.execute("""
+		CREATE TABLE IF NOT EXISTS flow_modes (
+			flow TEXT PRIMARY KEY,
+			mode TEXT NOT NULL DEFAULT 'off'
+		);
+		""")
+
 		# ---------------- MIGRATIONS ----------------
 
 		if not await _column_exists(conn, "flows", "sort_order"):
@@ -169,6 +184,14 @@ async def init_db():
 			);
 			""")
 
+		if not await _table_exists(conn, "flow_modes"):
+			await conn.execute("""
+			CREATE TABLE IF NOT EXISTS flow_modes (
+				flow TEXT PRIMARY KEY,
+				mode TEXT NOT NULL DEFAULT 'off'
+			);
+			""")
+
 		# restore flows if empty
 		cnt = await conn.fetchval("SELECT COUNT(*) FROM flows;")
 		if int(cnt or 0) == 0:
@@ -181,6 +204,52 @@ async def init_db():
 					flow, order
 				)
 				order += 1
+
+		# ✅ ensure flow_modes exists for every flow (default off)
+		flow_rows = await conn.fetch("SELECT name FROM flows;")
+		for r in flow_rows:
+			f = (r["name"] or "").strip()
+			if not f:
+				continue
+			await conn.execute("""
+			INSERT INTO flow_modes(flow, mode)
+			VALUES ($1, 'off')
+			ON CONFLICT (flow) DO NOTHING;
+			""", f)
+
+
+# ===================== FLOW MODES =====================
+
+async def get_flow_modes() -> Dict[str, str]:
+	"""
+	Возвращает dict: { flow: mode } где mode in ('off','manual','auto')
+	"""
+	pool = await get_pool()
+	async with pool.acquire() as conn:
+		rows = await conn.fetch("SELECT flow, mode FROM flow_modes ORDER BY flow ASC;")
+	out: Dict[str, str] = {}
+	for r in rows:
+		f = (r["flow"] or "").strip()
+		m = _norm_mode(r["mode"] or "off")
+		if f:
+			out[f] = m
+	return out
+
+
+async def set_flow_mode(flow: str, mode: str) -> None:
+	flow = (flow or "").strip()
+	if not flow:
+		return
+	mode = _norm_mode(mode)
+
+	pool = await get_pool()
+	async with pool.acquire() as conn:
+		await conn.execute("""
+		INSERT INTO flow_modes(flow, mode)
+		VALUES ($1, $2)
+		ON CONFLICT (flow) DO UPDATE SET
+			mode=EXCLUDED.mode;
+		""", flow, mode)
 
 
 # ===================== BOT ANALYTICS =====================
@@ -440,6 +509,12 @@ async def create_flow(name: str) -> None:
 			name, int(mx or 0) + 1
 		)
 
+	# ✅ default mode off
+	try:
+		await set_flow_mode(name, "off")
+	except Exception:
+		pass
+
 
 async def delete_flow(name: str) -> None:
 	pool = await get_pool()
@@ -448,6 +523,7 @@ async def delete_flow(name: str) -> None:
 			await conn.execute("DELETE FROM content_blocks WHERE flow=$1;", name)
 			await conn.execute("DELETE FROM jobs WHERE flow=$1;", name)
 			await conn.execute("DELETE FROM flow_triggers WHERE flow=$1;", name)
+			await conn.execute("DELETE FROM flow_modes WHERE flow=$1;", name)
 			await conn.execute("DELETE FROM flows WHERE name=$1;", name)
 
 

@@ -24,6 +24,9 @@ from db import (
 	upsert_job, fetch_due_jobs, mark_job_done,
 	get_flow_triggers,
 
+	# ✅ flow modes
+	get_flow_modes,
+
 	# ✅ gate pressed state + cancel reminder job
 	mark_gate_pressed,
 	is_gate_pressed,
@@ -34,7 +37,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
 	raise RuntimeError("BOT_TOKEN is not set")
 
-# базовый URL CRM, чтобы отдавать /media/... наружу
 CRM_BASE_URL = (os.getenv("CRM_BASE_URL") or "").strip().rstrip("/")
 
 SUPPORT_USERNAME = "@client_support"
@@ -46,6 +48,22 @@ bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 _jobs_task: asyncio.Task | None = None
+
+# кеш режимов флоу (обновляем на старте и на /start)
+_FLOW_MODES: dict[str, str] = {}
+
+
+def _mode(flow: str) -> str:
+	"""off/manual/auto (default off)"""
+	return (_FLOW_MODES.get((flow or "").strip()) or "off").strip().lower()
+
+
+async def refresh_flow_modes():
+	global _FLOW_MODES
+	try:
+		_FLOW_MODES = await get_flow_modes()
+	except Exception:
+		_FLOW_MODES = {}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -285,7 +303,7 @@ async def _schedule_gate_reminder(user_id: int, block_id: int, next_flow: str, s
 	seconds = int(seconds or 0)
 	if seconds <= 0:
 		return
-	run_atü_at = int(time.time()) + seconds
+	run_at = int(time.time()) + seconds
 	await upsert_job(int(user_id), _job_gate(block_id, next_flow), run_at)
 
 
@@ -348,19 +366,17 @@ async def render_flow(chat_id: int, flow: str):
 		# 3) ✅ GATE: если настроено — показываем кнопку и стопаем flow
 		next_flow = (block.get("gate_next_flow") or "").strip()
 		if next_flow:
-			btn_text = (block.get("gate_button_text") or "").strip() or "✅ Готов к следующему уроку"
+			btn_text = (block.get("gate_button_text") or "").strip() or "✅ Дальше"
 			rem_sec = int(block.get("gate_reminder_seconds") or 0)
-
 			block_id = int(block.get("id") or 0)
 
-			# планируем напоминание, если надо
 			if rem_sec > 0 and block_id > 0:
 				await _schedule_gate_reminder(chat_id, block_id, next_flow, rem_sec)
 
-			# ⚠️ Telegram не принимает пустой текст — иначе кнопка НЕ появится
+			# Telegram не любит пустой текст — ставим короткое сообщение над кнопкой
 			await bot.send_message(
 				chat_id,
-				"👇",
+				"👇 Нажми кнопку, чтобы перейти дальше",
 				reply_markup=InlineKeyboardMarkup(
 					inline_keyboard=[[
 						InlineKeyboardButton(
@@ -370,8 +386,6 @@ async def render_flow(chat_id: int, flow: str):
 					]]
 				)
 			)
-
-			# ✅ стопаем выполнение flow, пока юзер не нажмёт
 			return
 
 		# 4) delay
@@ -380,7 +394,7 @@ async def render_flow(chat_id: int, flow: str):
 
 
 # ─────────────────────────────────────────────────────────────
-# Scheduling from CRM (flow_triggers)
+# Scheduling from CRM (flow_triggers) BUT only if mode == auto
 
 async def schedule_from_flow_triggers(user_id: int) -> bool:
 	try:
@@ -402,18 +416,16 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 			if offset_seconds < 0:
 				continue
 
+			# ✅ только auto
+			if _mode(flow) != "auto":
+				continue
+
 			await upsert_job(user_id, _job_flow(flow), now + offset_seconds)
 			any_set = True
 		except Exception:
 			continue
 
 	return any_set
-
-
-async def schedule_fallback_day2_day3(user_id: int) -> None:
-	now = int(time.time())
-	await upsert_job(user_id, _job_flow("day2"), now + 24 * 3600)
-	await upsert_job(user_id, _job_flow("day3"), now + 48 * 3600)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -430,27 +442,24 @@ async def jobs_loop():
 					job_flow = (job["flow"] or "").strip()
 
 					try:
-						# обычный flow job
 						if job_flow.startswith("flow:"):
 							flow = job_flow.split(":", 1)[1].strip()
 							if flow:
-								await render_flow(uid, flow)
+								# ✅ jobs создаются только для auto, но на всякий случай проверим
+								if _mode(flow) == "auto":
+									await render_flow(uid, flow)
 
-						# ✅ gate reminder (only if NOT pressed)
 						elif job_flow.startswith("gate:"):
-							# формат: gate:<block_id>:<next_flow>
 							parts = job_flow.split(":", 2)
 							if len(parts) == 3:
 								block_id = int(parts[1])
 								next_flow = parts[2].strip()
 
-								# если кнопку уже нажали — не шлём напоминание
 								if block_id > 0 and await is_gate_pressed(uid, block_id):
 									continue
 
-								# читаем тексты из блока (если есть)
-								btn_text = "✅ Готов к следующему уроку"
-								text = "Напоминание: нажми кнопку, чтобы перейти к следующему уроку 👇"
+								btn_text = "✅ Дальше"
+								text = "Напоминание: нажми кнопку, чтобы перейти дальше 👇"
 								try:
 									b = await get_block(block_id)
 									if b:
@@ -463,7 +472,6 @@ async def jobs_loop():
 								except Exception:
 									pass
 
-								# отправляем напоминание + кнопку снова
 								await bot.send_message(
 									uid,
 									text,
@@ -478,7 +486,7 @@ async def jobs_loop():
 								)
 
 						else:
-							# backward compatibility: если в базе лежит просто "day2"
+							# backward compatibility
 							await render_flow(uid, job_flow)
 
 					finally:
@@ -503,12 +511,16 @@ async def cmd_start(message: Message):
 
 	await inc_start(uid, username)
 
-	ok = await schedule_from_flow_triggers(uid)
-	if not ok:
-		await schedule_fallback_day2_day3(uid)
+	# ✅ подтягиваем режимы flow
+	await refresh_flow_modes()
+
+	# ✅ планируем только auto flows
+	await schedule_from_flow_triggers(uid)
 
 	await render_flow(uid, "welcome")
 	await message.answer("👇", reply_markup=reply_main_menu())
+
+	# day1 тоже можно сделать manual/off в будущем, но пока оставим старт как есть
 	await render_flow(uid, "day1")
 
 
@@ -579,11 +591,9 @@ async def cb_lesson(call: CallbackQuery):
 	await render_flow(call.from_user.id, flow)
 
 
-# ✅ обработчик gate-кнопки (фиксируем нажатие + отменяем reminder job)
 @dp.callback_query(F.data.startswith("gate:"))
 async def cb_gate_next(call: CallbackQuery):
 	try:
-		# gate:<user_id>:<block_id>:<next_flow>
 		_, uid_s, block_id_s, next_flow = call.data.split(":", 3)
 		target_uid = int(uid_s)
 		block_id = int(block_id_s)
@@ -591,19 +601,16 @@ async def cb_gate_next(call: CallbackQuery):
 		await call.answer("Ошибка кнопки", show_alert=True)
 		return
 
-	# защита: только владелец может нажать
 	if call.from_user.id != target_uid:
 		await call.answer("Это не для тебя 🙂", show_alert=True)
 		return
 
-	# ✅ запомнить, что нажал
 	if block_id > 0:
 		try:
 			await mark_gate_pressed(target_uid, block_id)
 		except Exception:
 			pass
 
-	# ✅ погасить reminder-job, чтобы он не пришёл
 	try:
 		await mark_job_done_by_user_flow(target_uid, _job_gate(block_id, next_flow))
 	except Exception:
@@ -626,6 +633,7 @@ async def on_startup():
 	global _jobs_task
 
 	await init_db()
+	await refresh_flow_modes()
 
 	await bot.set_my_commands([
 		BotCommand(command="start", description="Начать курс"),

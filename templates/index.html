@@ -94,7 +94,9 @@
 		Порядок flow меняется ↑/↓. Удаление — безопасно (сотрёт блоки).
 	  </div>
 	  <div class="text-xs text-white/40 mt-1">
-		⏱️ Auto-send: можно настроить “через N минут/часов/дней после /start” (например day2 через 1 день).
+		⚙️ Mode: <span class="text-white/60">OFF</span> — ничего не отправлять,
+		<span class="text-white/60">MANUAL</span> — только по кнопке/ручному запуску,
+		<span class="text-white/60">AUTO</span> — по расписанию после /start.
 	  </div>
 	</div>
 
@@ -120,6 +122,7 @@
   <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
 	{% for f in flows %}
 	  {% set tr = (triggers[f] if (triggers is defined and f in triggers) else None) %}
+	  {% set mode = (tr.mode if tr and tr.mode is defined else "manual") %}
 
 	  <div class="rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-4">
 		<div class="flex items-center justify-between gap-3">
@@ -145,33 +148,49 @@
 		  </div>
 		</div>
 
-		<!-- AUTO SEND SETTINGS -->
+		<!-- MODE + AUTO SETTINGS -->
 		<div class="mt-4 rounded-2xl border border-white/10 bg-black/20 p-3">
 		  <div class="flex items-center justify-between gap-3">
 			<div class="text-xs text-white/55">
-			  Auto-send after <span class="text-white/80">/start</span>
+			  Delivery mode
 			</div>
 
-			{% if tr %}
-			  {% if tr.enabled %}
-				<span class="text-[11px] px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-200">enabled</span>
-			  {% else %}
-				<span class="text-[11px] px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white/60">disabled</span>
-			  {% endif %}
+			{% if mode == "auto" %}
+			  <span class="text-[11px] px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-200">AUTO</span>
+			{% elif mode == "off" %}
+			  <span class="text-[11px] px-2 py-1 rounded-lg bg-red-500/10 border border-red-500/20 text-red-200">OFF</span>
 			{% else %}
-			  <span class="text-[11px] px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white/60">not set</span>
+			  <span class="text-[11px] px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white/60">MANUAL</span>
 			{% endif %}
 		  </div>
 
-		  <div class="mt-3 flex flex-wrap items-center gap-2">
-			<form method="post" action="/flow/{{ f }}/trigger" class="flex flex-wrap items-center gap-2">
-			  <label class="flex items-center gap-2 text-xs text-white/60">
-				<input type="checkbox" name="enabled" value="1"
-				  {% if tr and tr.enabled %}checked{% endif %}
-				  class="accent-white"
-				/>
-				enabled
-			  </label>
+		  <form method="post" action="/flow/{{ f }}/trigger" class="mt-3 space-y-2" data-flow-settings>
+			<div class="flex flex-wrap items-center gap-2">
+			  <label class="text-xs text-white/60">Mode</label>
+
+			  <select name="mode" class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm" data-mode>
+				<option value="off" {% if mode=="off" %}selected{% endif %}>off (ничего не слать)</option>
+				<option value="manual" {% if mode=="manual" %}selected{% endif %}>manual (только кнопка)</option>
+				<option value="auto" {% if mode=="auto" %}selected{% endif %}>auto (по времени после /start)</option>
+			  </select>
+
+			  <button type="submit"
+				class="px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-sm hover:bg-white/15">
+				Save
+			  </button>
+
+			  <form method="post" action="/flow/{{ f }}/trigger/delete"
+					onsubmit="return confirm('Сбросить настройки доставки для этого flow?')">
+				<button type="submit"
+				  class="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-sm hover:bg-red-500/20 text-red-200">
+				  Reset
+				</button>
+			  </form>
+			</div>
+
+			<!-- AUTO options -->
+			<div class="flex flex-wrap items-center gap-2" data-auto>
+			  <div class="text-xs text-white/60">Auto-send after /start</div>
 
 			  <input
 				type="number"
@@ -190,24 +209,21 @@
 				<option value="days" {% if unit=="days" %}selected{% endif %}>days</option>
 			  </select>
 
-			  <button type="submit"
-				class="px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-sm hover:bg-white/15">
-				Save
-			  </button>
-			</form>
+			  <label class="flex items-center gap-2 text-xs text-white/60 ml-2">
+				<input type="checkbox" name="enabled" value="1"
+				  {% if tr and tr.enabled %}checked{% endif %}
+				  class="accent-white"
+				/>
+				enabled
+			  </label>
+			</div>
 
-			<form method="post" action="/flow/{{ f }}/trigger/delete"
-				  onsubmit="return confirm('Сбросить авто-отправку для этого flow?')">
-			  <button type="submit"
-				class="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-sm hover:bg-red-500/20 text-red-200">
-				Reset
-			  </button>
-			</form>
-		  </div>
+			<div class="text-[11px] text-white/35" data-auto-hint>
+			  Пример: <span class="text-white/60">day2</span> → <span class="text-white/60">1 days</span>,
+			  <span class="text-white/60">day3</span> → <span class="text-white/60">2 days</span>.
+			</div>
 
-		  <div class="mt-2 text-[11px] text-white/35">
-			Пример: для <span class="text-white/60">day2</span> поставь <span class="text-white/60">1 days</span>, для <span class="text-white/60">day3</span> — <span class="text-white/60">2 days</span>.
-		  </div>
+		  </form>
 		</div>
 
 	  </div>
@@ -217,5 +233,26 @@
   {% if flows|length == 0 %}
 	<div class="mt-4 text-white/50 text-sm">Нет flows. Запусти seed.py.</div>
   {% endif %}
+
+  <script>
+	(function(){
+	  const blocks = document.querySelectorAll('[data-flow-settings]');
+	  blocks.forEach(form => {
+		const modeSel = form.querySelector('[data-mode]');
+		const autoRow = form.querySelector('[data-auto]');
+		const hint = form.querySelector('[data-auto-hint]');
+
+		function apply() {
+		  const m = (modeSel?.value || 'manual');
+		  const showAuto = (m === 'auto');
+		  if (autoRow) autoRow.style.display = showAuto ? 'flex' : 'none';
+		  if (hint) hint.style.display = showAuto ? 'block' : 'none';
+		}
+
+		if (modeSel) modeSel.addEventListener('change', apply);
+		apply();
+	  });
+	})();
+  </script>
 
 {% endblock %}

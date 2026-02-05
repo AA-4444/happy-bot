@@ -174,8 +174,8 @@
 	  </div>
 
 	  <div class="text-[11px] text-white/40 mb-4">
-		Если заполнить <b>Next flow</b> — бот после этого блока НЕ покажет следующий урок автоматически,
-		а покажет кнопку. По нажатию — запустит выбранный flow.
+		Если заполнить <b>Next flow</b> — бот после этого блока остановится и покажет кнопку.
+		По нажатию — запустит выбранный flow.
 	  </div>
 
 	  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -200,7 +200,7 @@
 			  placeholder="например: day2"
 			/>
 			<div class="text-[11px] text-white/35 mt-1">
-			  (подсказка: чтобы был dropdown — передай <code>flows</code> в шаблон из crm.py)
+			  (чтобы был dropdown — нужно передать <code>flows</code> в шаблон из crm.py)
 			</div>
 		  {% endif %}
 		</div>
@@ -253,7 +253,7 @@
 		</div>
 	  </div>
 
-	  <div class="mt-3">
+	  <div class="mt-3 flex items-center gap-3">
 		<button
 		  type="button"
 		  class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10"
@@ -261,6 +261,9 @@
 		>
 		  Disable gate
 		</button>
+		<div class="text-[11px] text-white/35">
+		  Disabled = поле Next flow станет пустым (gate выключен).
+		</div>
 	  </div>
 	</div>
 

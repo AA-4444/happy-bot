@@ -21,6 +21,9 @@ from db import (
 	next_position, swap_positions,
 	get_stats, get_users,
 	get_flow_triggers, set_flow_trigger, delete_flow_trigger,
+
+	# ✅ NEW: flow modes (off/manual/auto)
+	get_flow_modes, set_flow_mode,
 )
 
 from seed import seed as run_seed  # ✅ автосид
@@ -83,8 +86,15 @@ def _safe_filename(name: str) -> str:
 	return n
 
 
+def _norm_mode(mode: str) -> str:
+	m = (mode or "").strip().lower()
+	if m not in ("off", "manual", "auto"):
+		return "off"
+	return m
+
+
 # ─────────────────────────────────────────────────────────────
-# INDEX (FLOWS + STATS + TRIGGERS)
+# INDEX (FLOWS + STATS + TRIGGERS + MODES)
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -92,8 +102,26 @@ async def index(request: Request):
 	stats = await get_stats()
 	users = await get_users(200)
 
+	# ✅ flow modes
+	try:
+		modes = await get_flow_modes()  # dict: flow -> mode
+	except Exception:
+		modes = {}
+
+	# triggers (offset + enabled)
 	raw = await get_flow_triggers()
 	triggers_map = {}
+
+	for f in flows:
+		# default trigger view
+		triggers_map[f] = {
+			"flow": f,
+			"enabled": False,
+			"offset_value": 0,
+			"offset_unit": "days",
+			"offset_seconds": 0,
+			"mode": _norm_mode(modes.get(f, "off")),
+		}
 
 	for t in raw:
 		flow = (t.get("flow") or "").strip()
@@ -105,13 +133,23 @@ async def index(request: Request):
 
 		val, unit = _seconds_to_value_unit(offset_seconds, preferred_unit="days")
 
-		triggers_map[flow] = {
-			"flow": flow,
-			"enabled": bool(enabled),
-			"offset_value": int(val),
-			"offset_unit": unit,
-			"offset_seconds": offset_seconds,
-		}
+		if flow not in triggers_map:
+			triggers_map[flow] = {
+				"flow": flow,
+				"enabled": bool(enabled),
+				"offset_value": int(val),
+				"offset_unit": unit,
+				"offset_seconds": offset_seconds,
+				"mode": _norm_mode(modes.get(flow, "off")),
+			}
+		else:
+			triggers_map[flow].update({
+				"enabled": bool(enabled),
+				"offset_value": int(val),
+				"offset_unit": unit,
+				"offset_seconds": offset_seconds,
+				"mode": _norm_mode(modes.get(flow, triggers_map[flow].get("mode", "off"))),
+			})
 
 	return templates.TemplateResponse(
 		"index.html",
@@ -120,18 +158,25 @@ async def index(request: Request):
 			"flows": flows,
 			"stats": stats,
 			"users": users,
-			"triggers": triggers_map,
+			"triggers": triggers_map,  # теперь тут есть triggers[flow]["mode"]
 		},
 	)
 
 
 # ─────────────────────────────────────────────────────────────
-# TRIGGERS routes
+# FLOW MODE + TRIGGERS routes
+#
+# Новая логика:
+# mode=off    -> ничего авто не отправляем
+# mode=manual -> ничего авто не отправляем (запуск только кнопкой)
+# mode=auto   -> авто отправка по offset
+#
+# Поэтому auto = is_active=1, off/manual = is_active=0
 
 @app.post("/flow/{flow}/trigger")
 async def flow_trigger_save(
 	flow: str,
-	enabled: Optional[str] = Form(None),
+	mode: str = Form("off"),
 	offset_value: int = Form(0),
 	offset_unit: str = Form("days"),
 ):
@@ -139,7 +184,9 @@ async def flow_trigger_save(
 	if not flow:
 		return RedirectResponse("/", status_code=302)
 
-	is_active = 1 if enabled else 0
+	mode = _norm_mode(mode)
+	await set_flow_mode(flow, mode)
+
 	offset_value = int(offset_value or 0)
 	if offset_value < 0:
 		offset_value = 0
@@ -149,6 +196,8 @@ async def flow_trigger_save(
 		unit = "days"
 
 	seconds = offset_value * _unit_to_seconds(unit)
+
+	is_active = 1 if mode == "auto" else 0
 
 	await set_flow_trigger(
 		flow=flow,
@@ -163,7 +212,12 @@ async def flow_trigger_save(
 async def flow_trigger_delete(flow: str):
 	flow = (flow or "").strip()
 	if flow:
+		# удаляем trigger и ставим off, чтобы точно ничего не авто-слалось
 		await delete_flow_trigger(flow)
+		try:
+			await set_flow_mode(flow, "off")
+		except Exception:
+			pass
 	return RedirectResponse("/", status_code=302)
 
 
@@ -237,6 +291,11 @@ async def flow_new_post(name: str = Form("")):
 		return RedirectResponse("/", status_code=302)
 
 	await create_flow(name)
+	# default mode = off (ничего не слать само)
+	try:
+		await set_flow_mode(name, "off")
+	except Exception:
+		pass
 	return RedirectResponse("/", status_code=302)
 
 
@@ -279,6 +338,8 @@ async def new_block_page(request: Request, flow: str):
 	await create_flow(flow)
 	pos = await next_position(flow)
 
+	flows = await get_flows()  # ✅ для dropdown "Next flow"
+
 	empty = {
 		"id": 0,
 		"flow": flow,
@@ -315,7 +376,7 @@ async def new_block_page(request: Request, flow: str):
 
 	return templates.TemplateResponse(
 		"edit.html",
-		{"request": request, "block": empty, "is_new": True},
+		{"request": request, "block": empty, "is_new": True, "flows": flows},
 	)
 
 
@@ -324,6 +385,8 @@ async def edit_block_page(request: Request, block_id: int):
 	block = await get_block(block_id)
 	if not block:
 		return RedirectResponse("/", status_code=302)
+
+	flows = await get_flows()  # ✅ для dropdown "Next flow"
 
 	# распарсим кнопки
 	btns = []
@@ -356,7 +419,7 @@ async def edit_block_page(request: Request, block_id: int):
 
 	return templates.TemplateResponse(
 		"edit.html",
-		{"request": request, "block": block, "is_new": False},
+		{"request": request, "block": block, "is_new": False, "flows": flows},
 	)
 
 
