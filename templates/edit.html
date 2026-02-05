@@ -20,13 +20,6 @@
 	<input type="hidden" name="file_kind" value="{{ block.get('file_kind','') }}" />
 	<input type="hidden" name="file_name" value="{{ block.get('file_name','') }}" />
 
-	{# чтобы gate не пропал при Save #}
-	<input type="hidden" name="gate_next_flow" value="{{ block.get('gate_next_flow','') }}" />
-	<input type="hidden" name="gate_button_text" value="{{ block.get('gate_button_text','') }}" />
-	<input type="hidden" name="gate_reminder_value" value="{{ block.get('gate_reminder_value', 0) }}" />
-	<input type="hidden" name="gate_reminder_unit" value="{{ block.get('gate_reminder_unit','hours') }}" />
-	<input type="hidden" name="gate_reminder_text" value="{{ block.get('gate_reminder_text','') }}" />
-
 	<div class="grid grid-cols-1 md:grid-cols-3 gap-3">
 	  <div>
 		<label class="text-xs text-white/50">flow</label>

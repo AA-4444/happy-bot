@@ -285,7 +285,7 @@ async def _schedule_gate_reminder(user_id: int, block_id: int, next_flow: str, s
 	seconds = int(seconds or 0)
 	if seconds <= 0:
 		return
-	run_at = int(time.time()) + seconds
+	run_atü_at = int(time.time()) + seconds
 	await upsert_job(int(user_id), _job_gate(block_id, next_flow), run_at)
 
 
@@ -357,9 +357,10 @@ async def render_flow(chat_id: int, flow: str):
 			if rem_sec > 0 and block_id > 0:
 				await _schedule_gate_reminder(chat_id, block_id, next_flow, rem_sec)
 
+			# ⚠️ Telegram не принимает пустой текст — иначе кнопка НЕ появится
 			await bot.send_message(
 				chat_id,
-				"",
+				"👇",
 				reply_markup=InlineKeyboardMarkup(
 					inline_keyboard=[[
 						InlineKeyboardButton(
@@ -447,7 +448,8 @@ async def jobs_loop():
 								if block_id > 0 and await is_gate_pressed(uid, block_id):
 									continue
 
-								# текст напоминания — из блока (если есть), иначе дефолт
+								# читаем тексты из блока (если есть)
+								btn_text = "✅ Готов к следующему уроку"
 								text = "Напоминание: нажми кнопку, чтобы перейти к следующему уроку 👇"
 								try:
 									b = await get_block(block_id)
@@ -455,10 +457,25 @@ async def jobs_loop():
 										custom = (b.get("gate_reminder_text") or "").strip()
 										if custom:
 											text = custom
+										bt = (b.get("gate_button_text") or "").strip()
+										if bt:
+											btn_text = bt
 								except Exception:
 									pass
 
-								await bot.send_message(uid, text)
+								# отправляем напоминание + кнопку снова
+								await bot.send_message(
+									uid,
+									text,
+									reply_markup=InlineKeyboardMarkup(
+										inline_keyboard=[[
+											InlineKeyboardButton(
+												text=btn_text,
+												callback_data=_gate_cb(uid, block_id, next_flow)
+											)
+										]]
+									)
+								)
 
 						else:
 							# backward compatibility: если в базе лежит просто "day2"
@@ -588,7 +605,7 @@ async def cb_gate_next(call: CallbackQuery):
 
 	# ✅ погасить reminder-job, чтобы он не пришёл
 	try:
-		await mark_job_done_by_user_flow(target_uid, f"gate:{block_id}:{next_flow}")
+		await mark_job_done_by_user_flow(target_uid, _job_gate(block_id, next_flow))
 	except Exception:
 		pass
 
