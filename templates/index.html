@@ -1,3 +1,4 @@
+{# templates/index.html #}
 {% extends "base.html" %}
 {% block content %}
 
@@ -98,6 +99,9 @@
 		<span class="text-white/60">MANUAL</span> — только по кнопке/ручному запуску,
 		<span class="text-white/60">AUTO</span> — по расписанию после /start.
 	  </div>
+	  <div class="text-[11px] text-white/35 mt-1">
+		Важно: чекбокс <span class="text-white/60">enabled</span> учитывается только когда Mode = <span class="text-white/60">auto</span>.
+	  </div>
 	</div>
 
 	<form method="post" action="/flow/new" class="flex items-center gap-2">
@@ -122,7 +126,8 @@
   <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
 	{% for f in flows %}
 	  {% set tr = (triggers[f] if (triggers is defined and f in triggers) else None) %}
-	  {% set mode = (tr.mode if tr and tr.mode is defined else "manual") %}
+	  {% set mode = (tr.mode if tr and tr.mode is defined else "off") %}
+	  {% set enabled = (tr.enabled if tr and tr.enabled is defined else false) %}
 
 	  <div class="rounded-2xl border border-white/10 bg-white/[0.02] px-4 py-4">
 		<div class="flex items-center justify-between gap-3">
@@ -151,9 +156,7 @@
 		<!-- MODE + AUTO SETTINGS -->
 		<div class="mt-4 rounded-2xl border border-white/10 bg-black/20 p-3">
 		  <div class="flex items-center justify-between gap-3">
-			<div class="text-xs text-white/55">
-			  Delivery mode
-			</div>
+			<div class="text-xs text-white/55">Delivery mode</div>
 
 			{% if mode == "auto" %}
 			  <span class="text-[11px] px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-200">AUTO</span>
@@ -164,6 +167,7 @@
 			{% endif %}
 		  </div>
 
+		  {# ✅ ВАЖНО: один form. Reset — отдельной кнопкой, но НЕ вложенной формой. #}
 		  <form method="post" action="/flow/{{ f }}/trigger" class="mt-3 space-y-2" data-flow-settings>
 			<div class="flex flex-wrap items-center gap-2">
 			  <label class="text-xs text-white/60">Mode</label>
@@ -179,13 +183,13 @@
 				Save
 			  </button>
 
-			  <form method="post" action="/flow/{{ f }}/trigger/delete"
-					onsubmit="return confirm('Сбросить настройки доставки для этого flow?')">
-				<button type="submit"
-				  class="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-sm hover:bg-red-500/20 text-red-200">
-				  Reset
-				</button>
-			  </form>
+			  <button
+				type="button"
+				class="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-sm hover:bg-red-500/20 text-red-200"
+				onclick="resetFlowSettings('{{ f }}')"
+			  >
+				Reset
+			  </button>
 			</div>
 
 			<!-- AUTO options -->
@@ -209,10 +213,15 @@
 				<option value="days" {% if unit=="days" %}selected{% endif %}>days</option>
 			  </select>
 
+			  {# ✅ ключевая правка: enabled выключаем и сбрасываем, если mode != auto #}
 			  <label class="flex items-center gap-2 text-xs text-white/60 ml-2">
-				<input type="checkbox" name="enabled" value="1"
-				  {% if tr and tr.enabled %}checked{% endif %}
+				<input
+				  type="checkbox"
+				  name="enabled"
+				  value="1"
+				  {% if mode=="auto" and enabled %}checked{% endif %}
 				  class="accent-white"
+				  data-enabled
 				/>
 				enabled
 			  </label>
@@ -236,23 +245,39 @@
 
   <script>
 	(function(){
-	  const blocks = document.querySelectorAll('[data-flow-settings]');
-	  blocks.forEach(form => {
+	  const forms = document.querySelectorAll('[data-flow-settings]');
+	  forms.forEach(form => {
 		const modeSel = form.querySelector('[data-mode]');
 		const autoRow = form.querySelector('[data-auto]');
 		const hint = form.querySelector('[data-auto-hint]');
+		const enabledCb = form.querySelector('[data-enabled]');
 
 		function apply() {
-		  const m = (modeSel?.value || 'manual');
+		  const m = (modeSel?.value || 'off');
 		  const showAuto = (m === 'auto');
+
 		  if (autoRow) autoRow.style.display = showAuto ? 'flex' : 'none';
 		  if (hint) hint.style.display = showAuto ? 'block' : 'none';
+
+		  // ✅ чтобы не было "подвоха": если не auto — принудительно снимаем enabled
+		  if (!showAuto && enabledCb) enabledCb.checked = false;
 		}
 
 		if (modeSel) modeSel.addEventListener('change', apply);
 		apply();
 	  });
 	})();
+
+	function resetFlowSettings(flowName) {
+	  if (!confirm('Сбросить настройки доставки для этого flow?')) return;
+
+	  // POST /flow/<flow>/trigger/delete (без вложенных форм)
+	  const f = document.createElement('form');
+	  f.method = 'post';
+	  f.action = '/flow/' + encodeURIComponent(flowName) + '/trigger/delete';
+	  document.body.appendChild(f);
+	  f.submit();
+	}
   </script>
 
 {% endblock %}

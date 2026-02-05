@@ -20,6 +20,9 @@
 	<input type="hidden" name="file_kind" value="{{ block.get('file_kind','') }}" />
 	<input type="hidden" name="file_name" value="{{ block.get('file_name','') }}" />
 
+	{# ✅ delay отправляем в секундах (бэкенд как раньше), а юзер вводит value+unit #}
+	<input type="hidden" id="delaySeconds" name="delay_seconds" value="{{ block.get('delay', 1.0) }}" />
+
 	<div class="grid grid-cols-1 md:grid-cols-3 gap-3">
 	  <div>
 		<label class="text-xs text-white/50">flow</label>
@@ -65,16 +68,45 @@
 		/>
 	  </div>
 
+	  {# ✅ Delay (human-friendly) #}
 	  <div>
 		<label class="text-xs text-white/50">delay</label>
-		<div class="text-[11px] text-white/35 -mt-0.5">можно писать дробные секунды (например 1.2)</div>
-		<input
-		  name="delay_seconds"
-		  type="number"
-		  step="0.1"
-		  value="{{ block.get('delay', 1.0) }}"
-		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
-		/>
+		<div class="text-[11px] text-white/35 -mt-0.5">можно ставить минуты/часы/дни (в базу уйдёт в секундах)</div>
+
+		<div class="mt-1 flex items-center gap-2">
+		  <input
+			id="delayValue"
+			type="number"
+			min="0"
+			step="1"
+			value=""
+			class="w-24 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+			placeholder="1"
+		  />
+
+		  <select
+			id="delayUnit"
+			class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		  >
+			<option value="seconds">seconds</option>
+			<option value="minutes">minutes</option>
+			<option value="hours">hours</option>
+			<option value="days">days</option>
+		  </select>
+
+		  <button
+			type="button"
+			class="px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-sm hover:bg-white/15"
+			onclick="applyDelayToSeconds()"
+			title="Синхронизировать delay → delay_seconds"
+		  >
+			Apply
+		  </button>
+		</div>
+
+		<div class="mt-2 text-[11px] text-white/40">
+		  Сейчас: <span class="text-white/70"><code id="delaySecondsPreview">{{ block.get('delay', 1.0) }}</code> sec</span>
+		</div>
 	  </div>
 
 	  <div>
@@ -212,6 +244,20 @@
 			value="{{ block.get('gate_button_text') or '✅ Готов к следующему уроку' }}"
 			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		  />
+		</div>
+	  </div>
+
+	  {# ✅ Сообщение над кнопкой (то самое “👇 Нажми кнопку…”) #}
+	  <div class="mt-3">
+		<label class="text-xs text-white/50">Text above button (editable)</label>
+		<input
+		  name="gate_prompt_text"
+		  value="{{ block.get('gate_prompt_text','') }}"
+		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
+		  placeholder="👇 Нажми кнопку, чтобы перейти дальше"
+		/>
+		<div class="text-[11px] text-white/35 mt-1">
+		  Если пусто — бот использует дефолтный текст.
 		</div>
 	  </div>
 
@@ -375,12 +421,14 @@
 	function clearGate() {
 	  const nf = document.querySelector('[name="gate_next_flow"]');
 	  const bt = document.querySelector('[name="gate_button_text"]');
+	  const gp = document.querySelector('[name="gate_prompt_text"]');
 	  const rv = document.querySelector('[name="gate_reminder_value"]');
 	  const ru = document.querySelector('[name="gate_reminder_unit"]');
 	  const rt = document.querySelector('[name="gate_reminder_text"]');
 
 	  if (nf) nf.value = '';
 	  if (bt) bt.value = '';
+	  if (gp) gp.value = '';
 	  if (rv) rv.value = '0';
 	  if (ru) ru.value = 'hours';
 	  if (rt) rt.value = '';
@@ -388,8 +436,64 @@
 	  alert('Gate отключён. Нажми Save.');
 	}
 
-	const typeSel = document.getElementById("typeSel");
-	if (typeSel) typeSel.addEventListener("change", toggleSections);
-	toggleSections();
+	// -------- Delay helpers (value+unit <-> seconds) --------
+	function unitToSeconds(unit) {
+	  const u = (unit || '').toLowerCase();
+	  if (u === 'minutes') return 60;
+	  if (u === 'hours') return 3600;
+	  if (u === 'days') return 86400;
+	  return 1; // seconds
+	}
+
+	function secondsToValueUnit(sec) {
+	  const s = Math.max(0, Math.floor(Number(sec || 0)));
+	  if (s === 0) return { value: 0, unit: 'seconds' };
+	  if (s % 86400 === 0) return { value: s / 86400, unit: 'days' };
+	  if (s % 3600 === 0) return { value: s / 3600, unit: 'hours' };
+	  if (s % 60 === 0) return { value: s / 60, unit: 'minutes' };
+	  return { value: s, unit: 'seconds' };
+	}
+
+	function applyDelayToSeconds() {
+	  const vEl = document.getElementById('delayValue');
+	  const uEl = document.getElementById('delayUnit');
+	  const sEl = document.getElementById('delaySeconds');
+	  const pEl = document.getElementById('delaySecondsPreview');
+
+	  const v = Math.max(0, Math.floor(Number((vEl && vEl.value) || 0)));
+	  const u = (uEl && uEl.value) || 'seconds';
+	  const sec = v * unitToSeconds(u);
+
+	  if (sEl) sEl.value = String(sec);
+	  if (pEl) pEl.textContent = String(sec);
+	}
+
+	function initDelayUI() {
+	  const sEl = document.getElementById('delaySeconds');
+	  const vEl = document.getElementById('delayValue');
+	  const uEl = document.getElementById('delayUnit');
+	  const pEl = document.getElementById('delaySecondsPreview');
+
+	  const sec = Number((sEl && sEl.value) || 0);
+	  const vu = secondsToValueUnit(sec);
+
+	  if (vEl) vEl.value = String(vu.value);
+	  if (uEl) uEl.value = vu.unit;
+	  if (pEl) pEl.textContent = String(Math.max(0, Math.floor(sec)));
+	}
+
+	// Автосинхронизация при изменении
+	document.addEventListener('DOMContentLoaded', () => {
+	  const typeSel = document.getElementById("typeSel");
+	  if (typeSel) typeSel.addEventListener("change", toggleSections);
+	  toggleSections();
+
+	  initDelayUI();
+
+	  const vEl = document.getElementById('delayValue');
+	  const uEl = document.getElementById('delayUnit');
+	  if (vEl) vEl.addEventListener('input', applyDelayToSeconds);
+	  if (uEl) uEl.addEventListener('change', applyDelayToSeconds);
+	});
   </script>
 {% endblock %}
