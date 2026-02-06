@@ -487,6 +487,46 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 	return any_set
 
 
+async def run_immediate_start_flows(user_id: int) -> None:
+	"""
+	Ключевая фиксация бага:
+	— flows с offset_seconds == 0 должны прилетать СРАЗУ на /start,
+	  а не ждать jobs_loop (который тикает раз в 20 сек).
+	"""
+	try:
+		triggers = await get_flow_triggers()
+	except Exception:
+		triggers = []
+
+	immediate: list[str] = []
+	for tr in (triggers or []):
+		try:
+			flow = (tr.get("flow") or "").strip()
+			if not flow:
+				continue
+
+			if int(tr.get("is_active") or 0) != 1:
+				continue
+
+			# только auto flows
+			if _mode(flow) != "auto":
+				continue
+
+			offset_seconds = int(tr.get("offset_seconds") or 0)
+			if offset_seconds != 0:
+				continue
+
+			immediate.append(flow)
+		except Exception:
+			continue
+
+	# порядок — как в списке triggers (обычно это position/order в БД).
+	# если у тебя нет порядка в БД — welcome/day1 можно будет сортировать отдельно,
+	# но сейчас так безопаснее.
+	for flow in immediate:
+		await render_flow(user_id, flow)
+
+
 # ─────────────────────────────────────────────────────────────
 # Jobs worker
 
@@ -504,9 +544,7 @@ async def jobs_loop():
 					try:
 						if job_key.startswith("flow:"):
 							flow = job_key.split(":", 1)[1].strip()
-							# ВАЖНО: по job мы запускаем независимо от mode,
-							# иначе flow по /start с mode=manual никогда не отработает.
-							if flow:
+							if flow and _mode(flow) == "auto":
 								await render_flow(uid, flow)
 
 						elif job_key.startswith("action:"):
@@ -569,7 +607,7 @@ async def jobs_loop():
 
 						else:
 							flow = job_key.strip()
-							if flow:
+							if flow and _mode(flow) == "auto":
 								await render_flow(uid, flow)
 
 					finally:
@@ -578,7 +616,8 @@ async def jobs_loop():
 			except Exception:
 				pass
 
-			await asyncio.sleep(20)
+			# если хочешь быстрее — можно 5, но оставляю 10 чтобы не долбить БД
+			await asyncio.sleep(10)
 
 	except asyncio.CancelledError:
 		return
@@ -594,14 +633,15 @@ async def cmd_start(message: Message):
 
 	await inc_start(uid, username)
 
-	# подтягиваем режимы flow из CRM
+	# обновляем режимы и ставим jobs из /start triggers
 	await refresh_flow_modes()
-
-	# ✅ CRM решает что запускать по /start (через flow_triggers)
 	await schedule_from_flow_triggers(uid)
 
-	# ✅ меню можно пока оставить хардкодом
-	await message.answer("", reply_markup=reply_main_menu())
+	# ✅ главное: всё с offset=0 шлём сразу (иначе "пусто после /start")
+	await run_immediate_start_flows(uid)
+
+	# меню
+	await message.answer("👇", reply_markup=reply_main_menu())
 
 
 @dp.message(Command("menu"))
