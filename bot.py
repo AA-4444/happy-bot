@@ -601,7 +601,7 @@ async def cmd_start(message: Message):
 	await schedule_from_flow_triggers(uid)
 
 	# ✅ меню можно пока оставить хардкодом
-	await message.answer("👇", reply_markup=reply_main_menu())
+	await message.answer("", reply_markup=reply_main_menu())
 
 
 @dp.message(Command("menu"))

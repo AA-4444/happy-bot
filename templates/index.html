@@ -86,79 +86,157 @@
 	  </table>
 	</div>
   </div>
+
   <!-- /START SEQUENCE -->
-	<div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4 mb-8">
-	  <div class="flex items-center justify-between mb-3">
-		<div>
-		  <div class="text-sm font-medium">/start sequence</div>
-		  <div class="text-xs text-white/40">
-			Какие flow запускаются при команде <span class="text-white/60">/start</span>
-		  </div>
+  <div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4 mb-8">
+	<div class="flex items-center justify-between mb-3">
+	  <div>
+		<div class="text-sm font-medium">/start sequence</div>
+		<div class="text-xs text-white/40 mt-1">
+		  Какие flow запускаются после <span class="text-white/60">/start</span> (delay относительно /start)
 		</div>
 	  </div>
-  
-	  <div class="space-y-3">
-		{% for f in flows %}
-		  {% set tr = (triggers[f] if (triggers is defined and f in triggers) else None) %}
-		  {% set enabled = (tr.enabled if tr and tr.enabled is defined else false) %}
-		  {% set mode = (tr.mode if tr and tr.mode is defined else "off") %}
-  
-		  <form
-			method="post"
-			action="/flow/{{ f }}/trigger"
-			class="flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-3"
-		  >
-			<div class="w-32 font-medium truncate">
-			  {{ f }}
-			</div>
-  
-			<label class="flex items-center gap-2 text-xs text-white/70">
-			  <input
-				type="checkbox"
-				name="enabled"
-				value="1"
-				{% if mode == "auto" and enabled %}checked{% endif %}
-				class="accent-white"
-			  />
-			  start on /start
-			</label>
-  
-			<input type="hidden" name="mode" value="auto" />
-  
-			<input
-			  type="number"
-			  name="offset_value"
-			  min="0"
-			  step="1"
-			  value="{{ tr.offset_value if tr and tr.offset_value is defined else 0 }}"
-			  class="w-20 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm"
-			/>
-  
-			<select
-			  name="offset_unit"
-			  class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm"
-			>
-			  {% set unit = (tr.offset_unit if tr and tr.offset_unit is defined else "days") %}
+	  <div class="text-[11px] text-white/40">
+		пример: welcome=0 min, day1=5 min, day2=1 day
+	  </div>
+	</div>
+
+	<div class="space-y-2">
+	  {% for f in flows %}
+		{% set tr = (triggers[f] if (triggers is defined and f in triggers) else None) %}
+		{% set enabled = (tr.enabled if tr and tr.enabled is defined else false) %}
+		{% set mode = (tr.mode if tr and tr.mode is defined else "off") %}
+		{% set unit = (tr.offset_unit if tr and tr.offset_unit is defined else "minutes") %}
+
+		<form method="post" action="/flow/{{ f }}/trigger"
+			  class="flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
+
+		  <div class="w-36 font-medium truncate">{{ f }}</div>
+
+		  <label class="flex items-center gap-2 text-xs text-white/80 select-none">
+			<input type="checkbox"
+				   name="enabled" value="1"
+				   {% if mode == "auto" and enabled %}checked{% endif %}
+				   class="w-5 h-5 rounded border border-white/30 bg-black/40 accent-emerald-400" />
+			run after /start
+		  </label>
+
+		  <input type="hidden" name="mode" value="auto" />
+
+		  <div class="flex items-center gap-2">
+			<span class="text-xs text-white/40">delay</span>
+			<input type="number" name="offset_value" min="0" step="1"
+				   value="{{ tr.offset_value if tr and tr.offset_value is defined else 0 }}"
+				   class="w-20 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm" />
+			<select name="offset_unit"
+					class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm">
 			  <option value="minutes" {% if unit=="minutes" %}selected{% endif %}>minutes</option>
 			  <option value="hours" {% if unit=="hours" %}selected{% endif %}>hours</option>
 			  <option value="days" {% if unit=="days" %}selected{% endif %}>days</option>
 			</select>
-  
-			<button
-			  type="submit"
-			  class="ml-auto px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-sm hover:bg-white/15"
-			>
-			  Save
-			</button>
-		  </form>
-		{% endfor %}
-	  </div>
-  
-	  <div class="text-[11px] text-white/35 mt-3">
-		Пример: <span class="text-white/60">welcome → 0 days</span>,
-		<span class="text-white/60">day1 → 1 days</span>
+		  </div>
+
+		  <button type="submit"
+				  class="ml-auto px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-sm hover:bg-white/15">
+			Save
+		  </button>
+		</form>
+	  {% endfor %}
+	</div>
+  </div>
+
+  <!-- AFTER FLOW → START FLOW -->
+  <div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4 mb-8">
+	<div class="mb-3">
+	  <div class="text-sm font-medium">After flow → start flow</div>
+	  <div class="text-xs text-white/40 mt-1">
+		Правила: после завершения flow A запустить flow B через задержку (welcome → day1 и т.д.)
 	  </div>
 	</div>
+
+	<!-- CREATE -->
+	<form method="post" action="/flow/action/new"
+		  class="rounded-xl border border-white/10 bg-black/20 p-3">
+	  <div class="flex flex-wrap items-center gap-3">
+		<div class="text-xs text-white/60">After</div>
+		<select name="after_flow" class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm">
+		  {% for f in flows %}
+			<option value="{{ f }}">{{ f }}</option>
+		  {% endfor %}
+		</select>
+
+		<div class="text-xs text-white/60">start</div>
+		<select name="target_flow" class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm">
+		  {% for f in flows %}
+			<option value="{{ f }}">{{ f }}</option>
+		  {% endfor %}
+		</select>
+
+		<div class="text-xs text-white/60">after</div>
+		<input type="number" name="delay_value" min="0" step="1" value="0"
+			   class="w-20 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm" />
+		<select name="delay_unit" class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm">
+		  <option value="seconds">seconds</option>
+		  <option value="minutes" selected>minutes</option>
+		  <option value="hours">hours</option>
+		  <option value="days">days</option>
+		</select>
+
+		<button type="submit"
+				class="ml-auto px-4 py-2 rounded-xl bg-white text-black text-sm font-medium hover:opacity-90">
+		  + Add rule
+		</button>
+	  </div>
+
+	  <div class="text-[11px] text-white/35 mt-2">
+		пример: After <span class="text-white/60">welcome</span> start <span class="text-white/60">day1</span> after <span class="text-white/60">5 minutes</span>
+	  </div>
+	</form>
+
+	<!-- LIST -->
+	<div class="mt-3 space-y-2">
+	  {% if actions is defined and actions|length > 0 %}
+		{% for a in actions %}
+		  {% set a_active = (a.is_active if a.is_active is defined else 0) %}
+
+		  <div class="flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
+			<div class="text-sm font-medium truncate w-44">{{ a.after_flow }}</div>
+			<div class="text-xs text-white/50">→</div>
+			<div class="text-sm font-medium truncate w-44">{{ a.target_flow }}</div>
+
+			<div class="text-xs text-white/50">
+			  delay: <span class="text-white/70">{{ a.delay_seconds }}</span>s
+			</div>
+
+			<div class="flex items-center gap-2 ml-auto">
+			  <form method="post" action="/flow/action/{{ a.id }}/toggle">
+				<input type="hidden" name="is_active" value="{% if a_active|int == 1 %}0{% else %}1{% endif %}">
+				<button type="submit"
+						class="px-3 py-2 rounded-xl border text-sm
+						{% if a_active|int == 1 %}
+						  bg-emerald-500/10 border-emerald-500/20 text-emerald-200 hover:bg-emerald-500/15
+						{% else %}
+						  bg-red-500/10 border-red-500/20 text-red-200 hover:bg-red-500/15
+						{% endif %}">
+				  {% if a_active|int == 1 %}ENABLED{% else %}DISABLED{% endif %}
+				</button>
+			  </form>
+
+			  <form method="post" action="/flow/action/{{ a.id }}/delete" onsubmit="return confirm('Удалить правило?')">
+				<button type="submit"
+						class="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-sm hover:bg-red-500/20 text-red-200">
+				  Delete
+				</button>
+			  </form>
+			</div>
+		  </div>
+		{% endfor %}
+	  {% else %}
+		<div class="text-sm text-white/45">Пока нет правил. Добавь welcome → day1.</div>
+	  {% endif %}
+	</div>
+  </div>
+
   <!-- FLOWS HEADER -->
   <div class="flex items-start justify-between gap-4">
 	<div>
@@ -166,29 +244,14 @@
 	  <div class="text-xs text-white/40 mt-1">
 		Порядок flow меняется ↑/↓. Удаление — безопасно (сотрёт блоки).
 	  </div>
-	  <div class="text-xs text-white/40 mt-1">
-		⚙️ Mode: <span class="text-white/60">OFF</span> — ничего не отправлять,
-		<span class="text-white/60">MANUAL</span> — только по кнопке/ручному запуску,
-		<span class="text-white/60">AUTO</span> — по расписанию после /start.
-	  </div>
-	  <div class="text-[11px] text-white/35 mt-1">
-		Важно: чекбокс <span class="text-white/60">enabled</span> учитывается только когда Mode = <span class="text-white/60">auto</span>.
-	  </div>
 	</div>
 
 	<form method="post" action="/flow/new" class="flex items-center gap-2">
-	  <input
-		type="text"
-		name="name"
-		required
-		autocomplete="off"
-		placeholder="new flow name (e.g. day4)"
-		class="w-56 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm"
-	  />
-	  <button
-		type="submit"
-		class="px-4 py-2 rounded-xl bg-white text-black text-sm font-medium hover:opacity-90"
-	  >
+	  <input type="text" name="name" required autocomplete="off"
+			 placeholder="new flow name (e.g. day4)"
+			 class="w-56 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm" />
+	  <button type="submit"
+			  class="px-4 py-2 rounded-xl bg-white text-black text-sm font-medium hover:opacity-90">
 		+ New flow
 	  </button>
 	</form>
@@ -225,7 +288,6 @@
 		  </div>
 		</div>
 
-		<!-- MODE + AUTO SETTINGS -->
 		<div class="mt-4 rounded-2xl border border-white/10 bg-black/20 p-3">
 		  <div class="flex items-center justify-between gap-3">
 			<div class="text-xs text-white/55">Delivery mode</div>
@@ -239,71 +301,54 @@
 			{% endif %}
 		  </div>
 
-		  {# ✅ ВАЖНО: один form. Reset — отдельной кнопкой, но НЕ вложенной формой. #}
 		  <form method="post" action="/flow/{{ f }}/trigger" class="mt-3 space-y-2" data-flow-settings>
 			<div class="flex flex-wrap items-center gap-2">
 			  <label class="text-xs text-white/60">Mode</label>
 
 			  <select name="mode" class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm" data-mode>
-				<option value="off" {% if mode=="off" %}selected{% endif %}>off (ничего не слать)</option>
-				<option value="manual" {% if mode=="manual" %}selected{% endif %}>manual (только кнопка)</option>
-				<option value="auto" {% if mode=="auto" %}selected{% endif %}>auto (по времени после /start)</option>
+				<option value="off" {% if mode=="off" %}selected{% endif %}>off</option>
+				<option value="manual" {% if mode=="manual" %}selected{% endif %}>manual</option>
+				<option value="auto" {% if mode=="auto" %}selected{% endif %}>auto</option>
 			  </select>
 
 			  <button type="submit"
-				class="px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-sm hover:bg-white/15">
+					  class="px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-sm hover:bg-white/15">
 				Save
 			  </button>
 
-			  <button
-				type="button"
-				class="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-sm hover:bg-red-500/20 text-red-200"
-				onclick="resetFlowSettings('{{ f }}')"
-			  >
+			  <button type="button"
+					  class="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 text-sm hover:bg-red-500/20 text-red-200"
+					  onclick="resetFlowSettings('{{ f }}')">
 				Reset
 			  </button>
 			</div>
 
-			<!-- AUTO options -->
 			<div class="flex flex-wrap items-center gap-2" data-auto>
 			  <div class="text-xs text-white/60">Auto-send after /start</div>
 
-			  <input
-				type="number"
-				name="offset_value"
-				min="0"
-				step="1"
-				value="{{ tr.offset_value if tr and tr.offset_value is defined else 0 }}"
-				class="w-24 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm"
-				placeholder="1"
-			  />
+			  <input type="number" name="offset_value" min="0" step="1"
+					 value="{{ tr.offset_value if tr and tr.offset_value is defined else 0 }}"
+					 class="w-24 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm" />
 
 			  <select name="offset_unit" class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm">
-				{% set unit = (tr.offset_unit if tr and tr.offset_unit is defined else "days") %}
-				<option value="minutes" {% if unit=="minutes" %}selected{% endif %}>minutes</option>
-				<option value="hours" {% if unit=="hours" %}selected{% endif %}>hours</option>
-				<option value="days" {% if unit=="days" %}selected{% endif %}>days</option>
+				{% set unit2 = (tr.offset_unit if tr and tr.offset_unit is defined else "days") %}
+				<option value="minutes" {% if unit2=="minutes" %}selected{% endif %}>minutes</option>
+				<option value="hours" {% if unit2=="hours" %}selected{% endif %}>hours</option>
+				<option value="days" {% if unit2=="days" %}selected{% endif %}>days</option>
 			  </select>
 
-			  {# ✅ ключевая правка: enabled выключаем и сбрасываем, если mode != auto #}
-			  <label class="flex items-center gap-2 text-xs text-white/60 ml-2">
-				<input
-				  type="checkbox"
-				  name="enabled"
-				  value="1"
-				  {% if mode=="auto" and enabled %}checked{% endif %}
-				  class="accent-white"
-				  data-enabled
-				/>
+			  <label class="flex items-center gap-2 text-xs text-white/80 ml-2 select-none">
+				<input type="checkbox" name="enabled" value="1"
+					   {% if mode=="auto" and enabled %}checked{% endif %}
+					   class="w-5 h-5 rounded border border-white/30 bg-black/40 accent-emerald-400"
+					   data-enabled />
 				enabled
 			  </label>
 			</div>
 
 			<div class="text-[11px] text-white/35" data-auto-hint>
-			  Пример: <span class="text-white/60">day2</span> → <span class="text-white/60">1 days</span>,
-			  <span class="text-white/60">day3</span> → <span class="text-white/60">2 days</span>.
+			  Пример: day2 → 1 days, day3 → 2 days.
 			</div>
-
 		  </form>
 		</div>
 
@@ -327,11 +372,8 @@
 		function apply() {
 		  const m = (modeSel?.value || 'off');
 		  const showAuto = (m === 'auto');
-
 		  if (autoRow) autoRow.style.display = showAuto ? 'flex' : 'none';
 		  if (hint) hint.style.display = showAuto ? 'block' : 'none';
-
-		  // ✅ чтобы не было "подвоха": если не auto — принудительно снимаем enabled
 		  if (!showAuto && enabledCb) enabledCb.checked = false;
 		}
 
@@ -342,8 +384,6 @@
 
 	function resetFlowSettings(flowName) {
 	  if (!confirm('Сбросить настройки доставки для этого flow?')) return;
-
-	  // POST /flow/<flow>/trigger/delete (без вложенных форм)
 	  const f = document.createElement('form');
 	  f.method = 'post';
 	  f.action = '/flow/' + encodeURIComponent(flowName) + '/trigger/delete';
