@@ -504,7 +504,9 @@ async def jobs_loop():
 					try:
 						if job_key.startswith("flow:"):
 							flow = job_key.split(":", 1)[1].strip()
-							if flow and _mode(flow) == "auto":
+							# ВАЖНО: по job мы запускаем независимо от mode,
+							# иначе flow по /start с mode=manual никогда не отработает.
+							if flow:
 								await render_flow(uid, flow)
 
 						elif job_key.startswith("action:"):
@@ -567,7 +569,7 @@ async def jobs_loop():
 
 						else:
 							flow = job_key.strip()
-							if flow and _mode(flow) == "auto":
+							if flow:
 								await render_flow(uid, flow)
 
 					finally:
@@ -592,13 +594,14 @@ async def cmd_start(message: Message):
 
 	await inc_start(uid, username)
 
+	# подтягиваем режимы flow из CRM
 	await refresh_flow_modes()
+
+	# ✅ CRM решает что запускать по /start (через flow_triggers)
 	await schedule_from_flow_triggers(uid)
 
-	await render_flow(uid, "welcome")
+	# ✅ меню можно пока оставить хардкодом
 	await message.answer("👇", reply_markup=reply_main_menu())
-
-	await render_flow(uid, "day1")
 
 
 @dp.message(Command("menu"))

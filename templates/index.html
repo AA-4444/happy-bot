@@ -86,7 +86,79 @@
 	  </table>
 	</div>
   </div>
-
+  <!-- /START SEQUENCE -->
+	<div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4 mb-8">
+	  <div class="flex items-center justify-between mb-3">
+		<div>
+		  <div class="text-sm font-medium">/start sequence</div>
+		  <div class="text-xs text-white/40">
+			Какие flow запускаются при команде <span class="text-white/60">/start</span>
+		  </div>
+		</div>
+	  </div>
+  
+	  <div class="space-y-3">
+		{% for f in flows %}
+		  {% set tr = (triggers[f] if (triggers is defined and f in triggers) else None) %}
+		  {% set enabled = (tr.enabled if tr and tr.enabled is defined else false) %}
+		  {% set mode = (tr.mode if tr and tr.mode is defined else "off") %}
+  
+		  <form
+			method="post"
+			action="/flow/{{ f }}/trigger"
+			class="flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-3"
+		  >
+			<div class="w-32 font-medium truncate">
+			  {{ f }}
+			</div>
+  
+			<label class="flex items-center gap-2 text-xs text-white/70">
+			  <input
+				type="checkbox"
+				name="enabled"
+				value="1"
+				{% if mode == "auto" and enabled %}checked{% endif %}
+				class="accent-white"
+			  />
+			  start on /start
+			</label>
+  
+			<input type="hidden" name="mode" value="auto" />
+  
+			<input
+			  type="number"
+			  name="offset_value"
+			  min="0"
+			  step="1"
+			  value="{{ tr.offset_value if tr and tr.offset_value is defined else 0 }}"
+			  class="w-20 px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm"
+			/>
+  
+			<select
+			  name="offset_unit"
+			  class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-sm"
+			>
+			  {% set unit = (tr.offset_unit if tr and tr.offset_unit is defined else "days") %}
+			  <option value="minutes" {% if unit=="minutes" %}selected{% endif %}>minutes</option>
+			  <option value="hours" {% if unit=="hours" %}selected{% endif %}>hours</option>
+			  <option value="days" {% if unit=="days" %}selected{% endif %}>days</option>
+			</select>
+  
+			<button
+			  type="submit"
+			  class="ml-auto px-3 py-2 rounded-xl bg-white/10 border border-white/10 text-sm hover:bg-white/15"
+			>
+			  Save
+			</button>
+		  </form>
+		{% endfor %}
+	  </div>
+  
+	  <div class="text-[11px] text-white/35 mt-3">
+		Пример: <span class="text-white/60">welcome → 0 days</span>,
+		<span class="text-white/60">day1 → 1 days</span>
+	  </div>
+	</div>
   <!-- FLOWS HEADER -->
   <div class="flex items-start justify-between gap-4">
 	<div>
