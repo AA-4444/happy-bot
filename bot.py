@@ -352,12 +352,9 @@ async def _run_after_flow_actions(user_id: int, after_flow: str) -> None:
 
 			action_id = int(a.get("id") or 0)
 			if delay <= 0:
-				# сразу
 				await render_flow(user_id, target, _via_action=True)
 			else:
-				# планируем отдельным job ключом
 				if action_id <= 0:
-					# fallback (хуже, но не теряем функционал)
 					await upsert_job(int(user_id), _job_flow(target), now + delay)
 				else:
 					await upsert_job(int(user_id), _job_action(action_id), now + delay)
@@ -421,11 +418,9 @@ async def render_flow(chat_id: int, flow: str, _via_action: bool = False):
 		if file_path:
 			await send_attachment(chat_id, file_path, file_kind, file_name)
 
-		# 3) ✅ GATE: если настроено — показываем кнопку и стопаем flow
+		# 3) GATE
 		next_flow = (block.get("gate_next_flow") or "").strip()
 		if next_flow:
-			# ✅ ВАЖНО: delay должен применяться ДО показа кнопки.
-			# Иначе кнопка появится сразу (как у тебя сейчас).
 			if delay > 0:
 				await asyncio.sleep(delay)
 
@@ -434,7 +429,6 @@ async def render_flow(chat_id: int, flow: str, _via_action: bool = False):
 			rem_sec = int(block.get("gate_reminder_seconds") or 0)
 			block_id = int(block.get("id") or 0)
 
-			# напоминание запускаем ПОСЛЕ delay, когда кнопка реально показана
 			if rem_sec > 0 and block_id > 0:
 				await _schedule_gate_reminder(chat_id, block_id, next_flow, rem_sec)
 
@@ -450,13 +444,12 @@ async def render_flow(chat_id: int, flow: str, _via_action: bool = False):
 					]]
 				)
 			)
-			return  # стопаем flow до нажатия
+			return
 
-		# 4) обычный delay (для НЕ-gate блоков)
+		# 4) delay for non-gate blocks
 		if delay > 0:
 			await asyncio.sleep(delay)
 
-	# ✅ flow дошёл до конца без gate — запускаем "after flow actions"
 	await _run_after_flow_actions(chat_id, flow)
 
 
@@ -483,7 +476,6 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 			if offset_seconds < 0:
 				continue
 
-			# ✅ только auto
 			if _mode(flow) != "auto":
 				continue
 
@@ -499,77 +491,96 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 # Jobs worker
 
 async def jobs_loop():
-try:
-	while True:
-		try:
-			due = await fetch_due_jobs(50)
+	try:
+		while True:
+			try:
+				due = await fetch_due_jobs(50)
 
-			for job in due:
-				jid = job["id"]
-				uid = job["user_id"]
-				job_key = (job.get("flow") or "").strip()
+				for job in due:
+					jid = job["id"]
+					uid = job["user_id"]
+					job_key = (job.get("flow") or "").strip()
 
-				try:
-					if job_key.startswith("flow:"):
-						flow = job_key.split(":", 1)[1].strip()
-						if flow and _mode(flow) == "auto":
-							await render_flow(uid, flow)
+					try:
+						if job_key.startswith("flow:"):
+							flow = job_key.split(":", 1)[1].strip()
+							if flow and _mode(flow) == "auto":
+								await render_flow(uid, flow)
 
-					elif job_key.startswith("action:"):
-						aid_s = job_key.split(":", 1)[1].strip()
-						try:
-							aid = int(aid_s)
-						except Exception:
-							aid = 0
-
-						if aid > 0:
+						elif job_key.startswith("action:"):
+							aid_s = job_key.split(":", 1)[1].strip()
 							try:
-								actions = await get_flow_actions(None)
+								aid = int(aid_s)
 							except Exception:
-								actions = []
+								aid = 0
 
-							for a in actions:
-								if int(a.get("id") or 0) == aid and int(a.get("is_active") or 0) == 1:
-									target = (a.get("target_flow") or "").strip()
-									if target:
-										await render_flow(uid, target, _via_action=True)
-									break
+							if aid > 0:
+								try:
+									actions = await get_flow_actions(None)
+								except Exception:
+									actions = []
 
-					elif job_key.startswith("gate:"):
-						parts = job_key.split(":", 2)
-						if len(parts) == 3:
-							block_id = int(parts[1])
-							next_flow = parts[2].strip()
+								target = ""
+								for a in actions or []:
+									if int(a.get("id") or 0) == aid and int(a.get("is_active") or 0) == 1:
+										target = (a.get("target_flow") or "").strip()
+										break
 
-							if not (block_id > 0 and await is_gate_pressed(uid, block_id)):
-								await bot.send_message(
-									uid,
-									"Напоминание: нажми кнопку 👇",
-									reply_markup=InlineKeyboardMarkup(
-										inline_keyboard=[[
-											InlineKeyboardButton(
-												text="✅ Дальше",
-												callback_data=_gate_cb(uid, block_id, next_flow)
-											)
-										]]
+								if target:
+									await render_flow(uid, target, _via_action=True)
+
+						elif job_key.startswith("gate:"):
+							parts = job_key.split(":", 2)
+							if len(parts) == 3:
+								block_id = int(parts[1])
+								next_flow = parts[2].strip()
+
+								if block_id > 0 and await is_gate_pressed(uid, block_id):
+									pass
+								else:
+									btn_text = "✅ Дальше"
+									text = "Напоминание: нажми кнопку, чтобы перейти дальше 👇"
+									try:
+										b = await get_block(block_id)
+										if b:
+											custom = (b.get("gate_reminder_text") or "").strip()
+											if custom:
+												text = custom
+											bt = (b.get("gate_button_text") or "").strip()
+											if bt:
+												btn_text = bt
+									except Exception:
+										pass
+
+									await bot.send_message(
+										uid,
+										text,
+										reply_markup=InlineKeyboardMarkup(
+											inline_keyboard=[[
+												InlineKeyboardButton(
+													text=btn_text,
+													callback_data=_gate_cb(uid, block_id, next_flow)
+												)
+											]]
+										)
 									)
-								)
 
-					else:
-						flow = job_key.strip()
-						if flow and _mode(flow) == "auto":
-							await render_flow(uid, flow)
+						else:
+							flow = job_key.strip()
+							if flow and _mode(flow) == "auto":
+								await render_flow(uid, flow)
 
-				finally:
-					await mark_job_done(jid)
+					finally:
+						await mark_job_done(jid)
 
-		except Exception:
-			pass
+			except Exception:
+				pass
 
-		await asyncio.sleep(20)
+			await asyncio.sleep(20)
 
-except asyncio.CancelledError:
-	return
+	except asyncio.CancelledError:
+		return
+
 
 # ─────────────────────────────────────────────────────────────
 # Handlers
@@ -581,16 +592,12 @@ async def cmd_start(message: Message):
 
 	await inc_start(uid, username)
 
-	# ✅ подтягиваем режимы flow
 	await refresh_flow_modes()
-
-	# ✅ планируем только auto flows
 	await schedule_from_flow_triggers(uid)
 
 	await render_flow(uid, "welcome")
 	await message.answer("👇", reply_markup=reply_main_menu())
 
-	# стартовый flow — явный запуск (не авто)
 	await render_flow(uid, "day1")
 
 
@@ -664,7 +671,6 @@ async def cb_lesson(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("gate:"))
 async def cb_gate_next(call: CallbackQuery):
 	try:
-		# gate:<user_id>:<block_id>:<next_flow>
 		_, uid_s, block_id_s, next_flow = call.data.split(":", 3)
 		target_uid = int(uid_s)
 		block_id = int(block_id_s)
@@ -672,19 +678,16 @@ async def cb_gate_next(call: CallbackQuery):
 		await call.answer("Ошибка кнопки", show_alert=True)
 		return
 
-	# защита: только владелец может нажать
 	if call.from_user.id != target_uid:
 		await call.answer("Это не для тебя 🙂", show_alert=True)
 		return
 
-	# ✅ запомнить, что нажал
 	if block_id > 0:
 		try:
 			await mark_gate_pressed(target_uid, block_id)
 		except Exception:
 			pass
 
-	# ✅ погасить reminder-job, чтобы он не пришёл
 	try:
 		await mark_job_done_by_user_flow(target_uid, _job_gate(block_id, next_flow))
 	except Exception:
