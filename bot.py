@@ -499,56 +499,57 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 # Jobs worker
 
 async def jobs_loop():
-	try:
-		while True:
-			try:
-				due = await fetch_due_jobs(50)
-				for job in due:
-					jid = job["id"]
-					uid = job["user_id"]
-					job_key = (job["flow"] or "").strip()
+try:
+	while True:
+		try:
+			due = await fetch_due_jobs(50)
 
-					try:
-						# 1) обычный flow job (только auto)
-						if job_key.startswith("flow:"):
-							flow = job_key.split(":", 1)[1].strip()
-							if flow and _mode(flow) == "auto":
-								await render_flow(uid, flow)
+			for job in due:
+				jid = job["id"]
+				uid = job["user_id"]
+				job_key = (job["flow"] or "").strip()
 
-						# 2) ✅ action job (после flow сценарий)
-						elif job_key.startswith("action:"):
-							aid_s = job_key.split(":", 1)[1].strip()
+				try:
+					# 1) обычный flow job (только auto)
+					if job_key.startswith("flow:"):
+						flow = job_key.split(":", 1)[1].strip()
+						if flow and _mode(flow) == "auto":
+							await render_flow(uid, flow)
+
+					# 2) ✅ action job (после flow сценарий)
+					elif job_key.startswith("action:"):
+						aid_s = job_key.split(":", 1)[1].strip()
+						try:
+							aid = int(aid_s)
+						except Exception:
+							aid = 0
+
+						if aid > 0:
 							try:
-								aid = int(aid_s)
+								actions = await get_flow_actions(None)
 							except Exception:
-								aid = 0
+								actions = []
 
-							if aid > 0:
-								try:
-									actions = await get_flow_actions(None)
-								except Exception:
-									actions = []
+							target = ""
+							for a in actions or []:
+								if int(a.get("id") or 0) == aid and int(a.get("is_active", 0) or 0) == 1:
+									target = (a.get("target_flow") or "").strip()
+									break
 
-								target = ""
-								for a in actions or []:
-									if int(a.get("id") or 0) == aid and int(a.get("is_active", 0) or 0) == 1:
-										target = (a.get("target_flow") or "").strip()
-										break
+							if target:
+								await render_flow(uid, target, _via_action=True)
 
-								if target:
-									await render_flow(uid, target, _via_action=True)
+					# 3) ✅ gate reminder
+					elif job_key.startswith("gate:"):
+						parts = job_key.split(":", 2)
+						if len(parts) == 3:
+							block_id = int(parts[1])
+							next_flow = parts[2].strip()
 
-						# 3) ✅ gate reminder
-						elif job_key.startswith("gate:"):
-							# формат: gate:<block_id>:<next_flow>
-							parts = job_key.split(":", 2)
-							if len(parts) == 3:
-								block_id = int(parts[1])
-								next_flow = parts[2].strip()
-
-								if block_id > 0 and await is_gate_pressed(uid, block_id):
-									continue
-
+							# если уже нажал — не шлём напоминание
+							if block_id > 0 and await is_gate_pressed(uid, block_id):
+								pass
+							else:
 								btn_text = "✅ Дальше"
 								text = "Напоминание: нажми кнопку, чтобы перейти дальше 👇"
 								try:
@@ -576,20 +577,22 @@ async def jobs_loop():
 									)
 								)
 
-						else:
-							# backward compatibility: если в базе лежит просто "day2"
-							await render_flow(uid, job_key)
+					# 4) backward compatibility: если в базе лежит просто "day2"
+					else:
+						flow = job_key.strip()
+						if flow and _mode(flow) == "auto":
+							await render_flow(uid, flow)
 
-					finally:
-						await mark_job_done(jid)
+				finally:
+					await mark_job_done(jid)
 
-			except Exception:
-				pass
+		except Exception:
+			pass
 
-			await asyncio.sleep(20)
+		await asyncio.sleep(20)
 
-	except asyncio.CancelledError:
-		return
+except asyncio.CancelledError:
+	return
 
 
 # ─────────────────────────────────────────────────────────────
