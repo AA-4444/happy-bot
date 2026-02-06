@@ -601,7 +601,7 @@ async def cmd_start(message: Message):
 
 	# ✅ НИКАКИХ render_flow("welcome") / render_flow("day1") тут нет.
 	# Всё управление — через CRM triggers + after-flow rules.
-	await message.answer("👇", reply_markup=reply_main_menu())
+	await message.answer("", reply_markup=reply_main_menu())
 
 
 @dp.message(Command("menu"))
