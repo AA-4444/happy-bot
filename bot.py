@@ -507,16 +507,14 @@ try:
 			for job in due:
 				jid = job["id"]
 				uid = job["user_id"]
-				job_key = (job["flow"] or "").strip()
+				job_key = (job.get("flow") or "").strip()
 
 				try:
-					# 1) обычный flow job (только auto)
 					if job_key.startswith("flow:"):
 						flow = job_key.split(":", 1)[1].strip()
 						if flow and _mode(flow) == "auto":
 							await render_flow(uid, flow)
 
-					# 2) ✅ action job (после flow сценарий)
 					elif job_key.startswith("action:"):
 						aid_s = job_key.split(":", 1)[1].strip()
 						try:
@@ -530,54 +528,33 @@ try:
 							except Exception:
 								actions = []
 
-							target = ""
-							for a in actions or []:
-								if int(a.get("id") or 0) == aid and int(a.get("is_active", 0) or 0) == 1:
+							for a in actions:
+								if int(a.get("id") or 0) == aid and int(a.get("is_active") or 0) == 1:
 									target = (a.get("target_flow") or "").strip()
+									if target:
+										await render_flow(uid, target, _via_action=True)
 									break
 
-							if target:
-								await render_flow(uid, target, _via_action=True)
-
-					# 3) ✅ gate reminder
 					elif job_key.startswith("gate:"):
 						parts = job_key.split(":", 2)
 						if len(parts) == 3:
 							block_id = int(parts[1])
 							next_flow = parts[2].strip()
 
-							# если уже нажал — не шлём напоминание
-							if block_id > 0 and await is_gate_pressed(uid, block_id):
-								pass
-							else:
-								btn_text = "✅ Дальше"
-								text = "Напоминание: нажми кнопку, чтобы перейти дальше 👇"
-								try:
-									b = await get_block(block_id)
-									if b:
-										custom = (b.get("gate_reminder_text") or "").strip()
-										if custom:
-											text = custom
-										bt = (b.get("gate_button_text") or "").strip()
-										if bt:
-											btn_text = bt
-								except Exception:
-									pass
-
+							if not (block_id > 0 and await is_gate_pressed(uid, block_id)):
 								await bot.send_message(
 									uid,
-									text,
+									"Напоминание: нажми кнопку 👇",
 									reply_markup=InlineKeyboardMarkup(
 										inline_keyboard=[[
 											InlineKeyboardButton(
-												text=btn_text,
+												text="✅ Дальше",
 												callback_data=_gate_cb(uid, block_id, next_flow)
 											)
 										]]
 									)
 								)
 
-					# 4) backward compatibility: если в базе лежит просто "day2"
 					else:
 						flow = job_key.strip()
 						if flow and _mode(flow) == "auto":
@@ -593,7 +570,6 @@ try:
 
 except asyncio.CancelledError:
 	return
-
 
 # ─────────────────────────────────────────────────────────────
 # Handlers
