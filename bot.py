@@ -24,13 +24,13 @@ from db import (
 	upsert_job, fetch_due_jobs, mark_job_done,
 	get_flow_triggers,
 
-	# ✅ flow modes
+	# flow modes
 	get_flow_modes,
 
-	# ✅ flow actions (after flow -> start target flow after delay)
+	# flow actions
 	get_flow_actions,
 
-	# ✅ gate pressed state + cancel reminder job
+	# gate pressed + cancel reminder job
 	mark_gate_pressed,
 	is_gate_pressed,
 	mark_job_done_by_user_flow,
@@ -52,8 +52,18 @@ dp = Dispatcher()
 
 _jobs_task: asyncio.Task | None = None
 
-# кеш режимов флоу (обновляем на старте и на /start)
+# кеш режимов флоу
 _FLOW_MODES: dict[str, str] = {}
+
+# 🔒 пер-юзер лок, чтобы не было параллельного render_flow (это ломало порядок и давало дубли)
+_USER_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _lock(uid: int) -> asyncio.Lock:
+	uid = int(uid)
+	if uid not in _USER_LOCKS:
+		_USER_LOCKS[uid] = asyncio.Lock()
+	return _USER_LOCKS[uid]
 
 
 def _mode(flow: str) -> str:
@@ -222,7 +232,7 @@ async def send_attachment(
 	kind = _normalize_kind(file_kind, file_path)
 	fn = _ensure_filename_with_ext(file_name, file_path)
 
-	# 1) URL (Railway)
+	# 1) URL
 	url = _to_public_url(file_path)
 	if url:
 		try:
@@ -239,16 +249,13 @@ async def send_attachment(
 		except Exception:
 			pass
 
-	# 2) local fallback
+	# 2) local
 	abs_path = _resolve_local_path(file_path)
 	if not abs_path:
 		await bot.send_message(chat_id, f"⚠️ Файл не найден: <code>{file_path}</code>")
 		return
 
 	kind = kind or _guess_kind_from_ext(abs_path)
-	if not fn:
-		fn = os.path.basename(abs_path)
-
 	f = FSInputFile(abs_path, filename=fn)
 	try:
 		if kind == "photo":
@@ -299,12 +306,11 @@ def _job_gate(block_id: int, next_flow: str) -> str:
 
 
 def _job_action(action_id: int) -> str:
-	# отдельный ключ, чтобы не перетирать flow:dayX
 	return f"action:{int(action_id)}"
 
 
 # ─────────────────────────────────────────────────────────────
-# GATE helpers
+# GATE
 
 def _gate_cb(user_id: int, block_id: int, next_flow: str) -> str:
 	return f"gate:{user_id}:{block_id}:{next_flow}"
@@ -319,13 +325,11 @@ async def _schedule_gate_reminder(user_id: int, block_id: int, next_flow: str, s
 
 
 # ─────────────────────────────────────────────────────────────
-# Flow actions runner (after flow)
+# After-flow actions runner
+# IMPORTANT: actions НЕ запускают render_flow напрямую — только ставят job.
+# Это убирает параллельный запуск и дубли.
 
-async def _run_after_flow_actions(user_id: int, after_flow: str) -> None:
-	"""
-	Сценарии из CRM: после выполнения after_flow — запусти target_flow через delay.
-	Это НЕ "auto mode" и не зависит от flow_modes целевого flow: управляется самим action.
-	"""
+async def _schedule_after_flow_actions(user_id: int, after_flow: str) -> None:
 	try:
 		actions = await get_flow_actions(after_flow)
 	except Exception:
@@ -351,110 +355,111 @@ async def _run_after_flow_actions(user_id: int, after_flow: str) -> None:
 				delay = 0
 
 			action_id = int(a.get("id") or 0)
-			if delay <= 0:
-				await render_flow(user_id, target, _via_action=True)
-			else:
-				if action_id <= 0:
-					await upsert_job(int(user_id), _job_flow(target), now + delay)
-				else:
-					await upsert_job(int(user_id), _job_action(action_id), now + delay)
+			key = _job_action(action_id) if action_id > 0 else _job_flow(target)
+			await upsert_job(int(user_id), key, now + delay)
 		except Exception:
 			continue
 
 
 # ─────────────────────────────────────────────────────────────
-# Flow rendering
+# Flow rendering (serialized per user)
 
-async def render_flow(chat_id: int, flow: str, _via_action: bool = False):
-	blocks = await get_blocks(flow)
+async def render_flow(chat_id: int, flow: str):
+	flow = (flow or "").strip()
+	if not flow:
+		return
 
-	for block in blocks:
-		if not block.get("is_active"):
-			continue
+	async with _lock(chat_id):
+		blocks = await get_blocks(flow)
 
-		t = (block.get("type") or "").strip()
-		delay = float(block.get("delay", 1.0) or 0)
-		kb = build_buttons_kb(block.get("buttons"))
+		for block in blocks:
+			if not block.get("is_active"):
+				continue
 
-		# 1) content
-		if t == "circle" and block.get("circle"):
-			await send_circle(chat_id, block.get("circle", ""))
+			t = (block.get("type") or "").strip()
+			delay = float(block.get("delay", 1.0) or 0)
+			kb = build_buttons_kb(block.get("buttons"))
 
-		elif t == "video" and block.get("video"):
-			title = (block.get("title") or "").strip() or "🎬 <b>Видео урок:</b>"
-			await bot.send_message(
-				chat_id,
-				title,
-				reply_markup=InlineKeyboardMarkup(
-					inline_keyboard=[[InlineKeyboardButton(text="▶️ Смотреть видео", url=block["video"])]]
+			# 1) content
+			if t == "circle" and block.get("circle"):
+				await send_circle(chat_id, block.get("circle", ""))
+
+			elif t == "video" and block.get("video"):
+				title = (block.get("title") or "").strip() or "🎬 <b>Видео урок:</b>"
+				await bot.send_message(
+					chat_id,
+					title,
+					reply_markup=InlineKeyboardMarkup(
+						inline_keyboard=[[InlineKeyboardButton(text="▶️ Смотреть видео", url=block["video"])]]
+					)
 				)
-			)
-			if kb:
-				await bot.send_message(chat_id, "⬇️", reply_markup=kb)
+				if kb:
+					await bot.send_message(chat_id, "⬇️", reply_markup=kb)
 
-		elif t == "buttons":
-			title = (block.get("title") or "").strip()
-			text = (block.get("text") or "").strip()
-			msg = title or text or "Выбери:"
-			if kb:
-				await bot.send_message(chat_id, msg, reply_markup=kb)
-			else:
-				if block.get("buttons"):
-					await bot.send_message(chat_id, "⚠️ buttons_json битый (невалидный JSON).")
+			elif t == "buttons":
+				title = (block.get("title") or "").strip()
+				text = (block.get("text") or "").strip()
+				msg = title or text or "Выбери:"
+				if kb:
+					await bot.send_message(chat_id, msg, reply_markup=kb)
 				else:
-					await bot.send_message(chat_id, msg)
+					if block.get("buttons"):
+						await bot.send_message(chat_id, "⚠️ buttons_json битый (невалидный JSON).")
+					else:
+						await bot.send_message(chat_id, msg)
 
-		elif t == "text" and block.get("text"):
-			await bot.send_message(chat_id, block["text"], reply_markup=kb)
-
-		else:
-			if block.get("text"):
+			elif t == "text" and block.get("text"):
 				await bot.send_message(chat_id, block["text"], reply_markup=kb)
 
-		# 2) attachment
-		file_path = (block.get("file_path") or "").strip()
-		file_kind = (block.get("file_kind") or "").strip()
-		file_name = (block.get("file_name") or "").strip()
-		if file_path:
-			await send_attachment(chat_id, file_path, file_kind, file_name)
+			else:
+				if block.get("text"):
+					await bot.send_message(chat_id, block["text"], reply_markup=kb)
 
-		# 3) GATE
-		next_flow = (block.get("gate_next_flow") or "").strip()
-		if next_flow:
+			# 2) attachment
+			file_path = (block.get("file_path") or "").strip()
+			file_kind = (block.get("file_kind") or "").strip()
+			file_name = (block.get("file_name") or "").strip()
+			if file_path:
+				await send_attachment(chat_id, file_path, file_kind, file_name)
+
+			# 3) GATE
+			next_flow = (block.get("gate_next_flow") or "").strip()
+			if next_flow:
+				if delay > 0:
+					await asyncio.sleep(delay)
+
+				btn_text = (block.get("gate_button_text") or "").strip() or "✅ Дальше"
+				prompt_text = (block.get("gate_prompt_text") or "").strip() or "👇 Нажми кнопку, чтобы перейти дальше"
+				rem_sec = int(block.get("gate_reminder_seconds") or 0)
+				block_id = int(block.get("id") or 0)
+
+				if rem_sec > 0 and block_id > 0:
+					await _schedule_gate_reminder(chat_id, block_id, next_flow, rem_sec)
+
+				await bot.send_message(
+					chat_id,
+					prompt_text,
+					reply_markup=InlineKeyboardMarkup(
+						inline_keyboard=[[
+							InlineKeyboardButton(
+								text=btn_text,
+								callback_data=_gate_cb(chat_id, block_id, next_flow)
+							)
+						]]
+					)
+				)
+				return
+
+			# 4) delay for non-gate blocks
 			if delay > 0:
 				await asyncio.sleep(delay)
 
-			btn_text = (block.get("gate_button_text") or "").strip() or "✅ Дальше"
-			prompt_text = (block.get("gate_prompt_text") or "").strip() or "👇 Нажми кнопку, чтобы перейти дальше"
-			rem_sec = int(block.get("gate_reminder_seconds") or 0)
-			block_id = int(block.get("id") or 0)
-
-			if rem_sec > 0 and block_id > 0:
-				await _schedule_gate_reminder(chat_id, block_id, next_flow, rem_sec)
-
-			await bot.send_message(
-				chat_id,
-				prompt_text,
-				reply_markup=InlineKeyboardMarkup(
-					inline_keyboard=[[
-						InlineKeyboardButton(
-							text=btn_text,
-							callback_data=_gate_cb(chat_id, block_id, next_flow)
-						)
-					]]
-				)
-			)
-			return
-
-		# 4) delay for non-gate blocks
-		if delay > 0:
-			await asyncio.sleep(delay)
-
-	await _run_after_flow_actions(chat_id, flow)
+		# ✅ после flow — ставим after-flow rules (через jobs)
+		await _schedule_after_flow_actions(chat_id, flow)
 
 
 # ─────────────────────────────────────────────────────────────
-# Scheduling from CRM (flow_triggers) BUT only if mode == auto
+# Scheduling from CRM (flow_triggers) only if mode == auto
 
 async def schedule_from_flow_triggers(user_id: int) -> bool:
 	try:
@@ -476,55 +481,16 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 			if offset_seconds < 0:
 				continue
 
+			# только если flow mode = auto
 			if _mode(flow) != "auto":
 				continue
 
-			await upsert_job(user_id, _job_flow(flow), now + offset_seconds)
+			await upsert_job(int(user_id), _job_flow(flow), now + offset_seconds)
 			any_set = True
 		except Exception:
 			continue
 
 	return any_set
-
-
-async def run_immediate_start_flows(user_id: int) -> None:
-	"""
-	Ключевая фиксация бага:
-	— flows с offset_seconds == 0 должны прилетать СРАЗУ на /start,
-	  а не ждать jobs_loop (который тикает раз в 20 сек).
-	"""
-	try:
-		triggers = await get_flow_triggers()
-	except Exception:
-		triggers = []
-
-	immediate: list[str] = []
-	for tr in (triggers or []):
-		try:
-			flow = (tr.get("flow") or "").strip()
-			if not flow:
-				continue
-
-			if int(tr.get("is_active") or 0) != 1:
-				continue
-
-			# только auto flows
-			if _mode(flow) != "auto":
-				continue
-
-			offset_seconds = int(tr.get("offset_seconds") or 0)
-			if offset_seconds != 0:
-				continue
-
-			immediate.append(flow)
-		except Exception:
-			continue
-
-	# порядок — как в списке triggers (обычно это position/order в БД).
-	# если у тебя нет порядка в БД — welcome/day1 можно будет сортировать отдельно,
-	# но сейчас так безопаснее.
-	for flow in immediate:
-		await render_flow(user_id, flow)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -544,10 +510,12 @@ async def jobs_loop():
 					try:
 						if job_key.startswith("flow:"):
 							flow = job_key.split(":", 1)[1].strip()
+							# ✅ flow jobs отправляем только если mode auto
 							if flow and _mode(flow) == "auto":
 								await render_flow(uid, flow)
 
 						elif job_key.startswith("action:"):
+							# ✅ actions выполняются независимо от mode (это after-flow логика)
 							aid_s = job_key.split(":", 1)[1].strip()
 							try:
 								aid = int(aid_s)
@@ -567,7 +535,7 @@ async def jobs_loop():
 										break
 
 								if target:
-									await render_flow(uid, target, _via_action=True)
+									await render_flow(uid, target)
 
 						elif job_key.startswith("gate:"):
 							parts = job_key.split(":", 2)
@@ -605,19 +573,13 @@ async def jobs_loop():
 										)
 									)
 
-						else:
-							flow = job_key.strip()
-							if flow and _mode(flow) == "auto":
-								await render_flow(uid, flow)
-
 					finally:
 						await mark_job_done(jid)
 
 			except Exception:
 				pass
 
-			# если хочешь быстрее — можно 5, но оставляю 10 чтобы не долбить БД
-			await asyncio.sleep(10)
+			await asyncio.sleep(2)
 
 	except asyncio.CancelledError:
 		return
@@ -633,14 +595,12 @@ async def cmd_start(message: Message):
 
 	await inc_start(uid, username)
 
-	# обновляем режимы и ставим jobs из /start triggers
+	# обновляем режимы и ставим расписание из CRM
 	await refresh_flow_modes()
 	await schedule_from_flow_triggers(uid)
 
-	# ✅ главное: всё с offset=0 шлём сразу (иначе "пусто после /start")
-	await run_immediate_start_flows(uid)
-
-	# меню
+	# ✅ НИКАКИХ render_flow("welcome") / render_flow("day1") тут нет.
+	# Всё управление — через CRM triggers + after-flow rules.
 	await message.answer("👇", reply_markup=reply_main_menu())
 
 
@@ -707,7 +667,8 @@ async def btn_support(message: Message):
 async def cb_lesson(call: CallbackQuery):
 	await call.answer()
 	await inc_message(call.from_user.id, call.from_user.username or "")
-	flow = call.data.split(":", 1)[1]
+	flow = call.data.split(":", 1)[1].strip()
+	# manual запуск — разрешаем всегда
 	await render_flow(call.from_user.id, flow)
 
 
@@ -717,6 +678,7 @@ async def cb_gate_next(call: CallbackQuery):
 		_, uid_s, block_id_s, next_flow = call.data.split(":", 3)
 		target_uid = int(uid_s)
 		block_id = int(block_id_s)
+		next_flow = (next_flow or "").strip()
 	except Exception:
 		await call.answer("Ошибка кнопки", show_alert=True)
 		return
