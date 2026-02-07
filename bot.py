@@ -605,86 +605,87 @@ async def jobs_loop():
 
 
 # ─────────────────────────────────────────────────────────────
-		# Handlers
-		
-		EMPTY = "\u200b"  # Telegram не принимает пустой текст, это "визуально пусто"
-		
-		@dp.message(CommandStart())
-		async def cmd_start(message: Message):
-			uid = message.from_user.id
-			username = message.from_user.username or ""
-		
-			await inc_start(uid, username)
-		
-			await refresh_flow_modes()
-			await schedule_from_flow_triggers(uid)
-		
-			# показать меню "без текста" (но не пустой строкой!)
-			await message.answer(EMPTY, reply_markup=reply_main_menu())
-		
-		
-		@dp.message(Command("menu"))
-		async def cmd_menu(message: Message):
-			await inc_message(message.from_user.id, message.from_user.username or "")
-			await message.answer(EMPTY, reply_markup=reply_main_menu())
-		
-		
-		@dp.message(Command("lessons"))
-		async def cmd_lessons(message: Message):
-			await inc_message(message.from_user.id, message.from_user.username or "")
-			await message.answer("📚 <b>Уроки</b>\nВыбери день:", reply_markup=inline_lessons_menu())
-			# вернуть нижнее меню, чтобы не исчезало
-			await message.answer(EMPTY, reply_markup=reply_main_menu())
-		
-		
-		@dp.message(Command("faq"))
-		async def cmd_faq(message: Message):
-			await inc_message(message.from_user.id, message.from_user.username or "")
-			await message.answer(
-				"❓ <b>FAQ</b>\n\n"
-				"• Курс длится 3 дня\n"
-				"• Видео внутри уроков\n"
-				f"• Поддержка: {SUPPORT_USERNAME}"
-			)
-			await message.answer(EMPTY, reply_markup=reply_main_menu())
-		
-		
-		@dp.message(Command("web"))
-		async def cmd_web(message: Message):
-			await inc_message(message.from_user.id, message.from_user.username or "")
-			await message.answer("🌐 <b>Наш сайт</b>", reply_markup=inline_web_button())
-			await message.answer(EMPTY, reply_markup=reply_main_menu())
-		
-		
-		@dp.message(Command("support"))
-		async def cmd_support(message: Message):
-			await inc_message(message.from_user.id, message.from_user.username or "")
-			await message.answer(f"🆘 Поддержка: {SUPPORT_USERNAME}")
-			await message.answer(EMPTY, reply_markup=reply_main_menu())
-		
-		
-		@dp.message(F.text == "📚 Lessons")
-		async def btn_lessons(message: Message):
-			await inc_message(message.from_user.id, message.from_user.username or "")
-			await cmd_lessons(message)
-		
-		
-		@dp.message(F.text == "❓ FAQ")
-		async def btn_faq(message: Message):
-			await inc_message(message.from_user.id, message.from_user.username or "")
-			await cmd_faq(message)
-		
-		
-		@dp.message(F.text == "🌐 Web")
-		async def btn_web(message: Message):
-			await inc_message(message.from_user.id, message.from_user.username or "")
-			await cmd_web(message)
-		
-		
-		@dp.message(F.text == "🆘 Support")
-		async def btn_support(message: Message):
-			await inc_message(message.from_user.id, message.from_user.username or "")
-			await cmd_support(message)
+# Handlers
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+	uid = message.from_user.id
+	username = message.from_user.username or ""
+
+	await inc_start(uid, username)
+
+	# обновляем режимы и ставим расписание из CRM
+	await refresh_flow_modes()
+	await schedule_from_flow_triggers(uid)
+
+	# ✅ НИКАКИХ render_flow("welcome") / render_flow("day1") тут нет.
+	# Всё управление — через CRM triggers + after-flow rules.
+	await show_main_menu(uid, text="")
+
+
+@dp.message(Command("menu"))
+async def cmd_menu(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await show_main_menu(message.from_user.id, text="")
+
+
+@dp.message(Command("lessons"))
+async def cmd_lessons(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await message.answer("📚 <b>Уроки</b>\nВыбери день:", reply_markup=inline_lessons_menu())
+	# ✅ вернуть reply-меню чтобы не исчезало
+	await show_main_menu(message.from_user.id)
+
+
+@dp.message(Command("faq"))
+async def cmd_faq(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await message.answer(
+		"❓ <b>FAQ</b>\n\n"
+		"• Курс длится 3 дня\n"
+		"• Видео внутри уроков\n"
+		f"• Поддержка: {SUPPORT_USERNAME}"
+	)
+	await show_main_menu(message.from_user.id)
+
+
+@dp.message(Command("web"))
+async def cmd_web(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await message.answer("🌐 <b>Наш сайт</b>", reply_markup=inline_web_button())
+	await show_main_menu(message.from_user.id)
+
+
+@dp.message(Command("support"))
+async def cmd_support(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await message.answer(f"🆘 Поддержка: {SUPPORT_USERNAME}")
+	await show_main_menu(message.from_user.id)
+
+
+@dp.message(F.text == "📚 Lessons")
+async def btn_lessons(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await cmd_lessons(message)
+
+
+@dp.message(F.text == "❓ FAQ")
+async def btn_faq(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await cmd_faq(message)
+
+
+@dp.message(F.text == "🌐 Web")
+async def btn_web(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await cmd_web(message)
+
+
+@dp.message(F.text == "🆘 Support")
+async def btn_support(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await cmd_support(message)
+
 
 @dp.callback_query(F.data.startswith("lesson:"))
 async def cb_lesson(call: CallbackQuery):
