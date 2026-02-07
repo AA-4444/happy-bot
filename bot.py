@@ -620,13 +620,13 @@ async def cmd_start(message: Message):
 
 	# ✅ НИКАКИХ render_flow("welcome") / render_flow("day1") тут нет.
 	# Всё управление — через CRM triggers + after-flow rules.
-	await show_main_menu(uid, text="")
+	await show_main_menu(uid, text="👇")
 
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
-	await show_main_menu(message.from_user.id, text="")
+	await show_main_menu(message.from_user.id, text="👇")
 
 
 @dp.message(Command("lessons"))
