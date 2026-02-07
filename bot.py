@@ -55,7 +55,7 @@ _jobs_task: asyncio.Task | None = None
 # кеш режимов флоу
 _FLOW_MODES: dict[str, str] = {}
 
-# 🔒 пер-юзер лок, чтобы не было параллельного render_flow (это ломало порядок и давало дубли)
+# 🔒 пер-юзер лок, чтобы не было параллельного render_flow
 _USER_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -83,7 +83,7 @@ async def refresh_flow_modes():
 # UI
 
 def reply_main_menu() -> ReplyKeyboardMarkup:
-	# ✅ is_persistent=True — чтобы "квадратик меню" на iOS не исчезал
+	# is_persistent=True — чтобы "квадратик" не исчезал на iOS
 	return ReplyKeyboardMarkup(
 		keyboard=[
 			[KeyboardButton(text="📚 Lessons"), KeyboardButton(text="❓ FAQ")],
@@ -92,8 +92,6 @@ def reply_main_menu() -> ReplyKeyboardMarkup:
 		resize_keyboard=True,
 		is_persistent=True,
 	)
-
-
 
 
 def inline_web_button() -> InlineKeyboardMarkup:
@@ -329,9 +327,7 @@ async def _schedule_gate_reminder(user_id: int, block_id: int, next_flow: str, s
 
 
 # ─────────────────────────────────────────────────────────────
-# After-flow actions runner
-# IMPORTANT: actions НЕ запускают render_flow напрямую — только ставят job.
-# Это убирает параллельный запуск и дубли.
+# After-flow actions runner (ставим jobs, не запускаем render_flow напрямую)
 
 async def _schedule_after_flow_actions(user_id: int, after_flow: str) -> None:
 	try:
@@ -367,6 +363,7 @@ async def _schedule_after_flow_actions(user_id: int, after_flow: str) -> None:
 
 # ─────────────────────────────────────────────────────────────
 # Flow rendering (serialized per user)
+# ВАЖНО: reply keyboard вешаем ТОЛЬКО на первый текст welcome, один раз.
 
 async def render_flow(chat_id: int, flow: str):
 	flow = (flow or "").strip()
@@ -384,12 +381,15 @@ async def render_flow(chat_id: int, flow: str):
 			delay = float(block.get("delay", 1.0) or 0)
 			kb = build_buttons_kb(block.get("buttons"))
 
+			# Вешаем reply-меню ТОЛЬКО на welcome, только на текстовые сообщения.
+			attach_reply_menu = (flow == "welcome" and t in ("text", "", None) and bool(block.get("text")))
+
 			# 1) content
 			if t == "circle" and block.get("circle"):
 				await send_circle(chat_id, block.get("circle", ""))
 
 			elif t == "video" and block.get("video"):
-				title = (block.get("title") or "").strip() or "🎬 <b>Видео урок:</b>"
+				title = (block.get("title") or "").strip() or "<b>Видео урок:</b>"
 				await bot.send_message(
 					chat_id,
 					title,
@@ -398,12 +398,12 @@ async def render_flow(chat_id: int, flow: str):
 					)
 				)
 				if kb:
-					await bot.send_message(chat_id, "⬇️", reply_markup=kb)
+					await bot.send_message(chat_id, " ", reply_markup=kb)
 
 			elif t == "buttons":
 				title = (block.get("title") or "").strip()
 				text = (block.get("text") or "").strip()
-				msg = title or text or "Выбери:"
+				msg = title or text or " "
 				if kb:
 					await bot.send_message(chat_id, msg, reply_markup=kb)
 				else:
@@ -413,11 +413,18 @@ async def render_flow(chat_id: int, flow: str):
 						await bot.send_message(chat_id, msg)
 
 			elif t == "text" and block.get("text"):
-				await bot.send_message(chat_id, block["text"], reply_markup=kb)
+				# вот тут — единственное место, где reply keyboard реально прикрепляем
+				if attach_reply_menu:
+					await bot.send_message(chat_id, block["text"], reply_markup=reply_main_menu())
+				else:
+					await bot.send_message(chat_id, block["text"], reply_markup=kb)
 
 			else:
 				if block.get("text"):
-					await bot.send_message(chat_id, block["text"], reply_markup=kb)
+					if attach_reply_menu:
+						await bot.send_message(chat_id, block["text"], reply_markup=reply_main_menu())
+					else:
+						await bot.send_message(chat_id, block["text"], reply_markup=kb)
 
 			# 2) attachment
 			file_path = (block.get("file_path") or "").strip()
@@ -432,8 +439,8 @@ async def render_flow(chat_id: int, flow: str):
 				if delay > 0:
 					await asyncio.sleep(delay)
 
-				btn_text = (block.get("gate_button_text") or "").strip() or "✅ Дальше"
-				prompt_text = (block.get("gate_prompt_text") or "").strip() or "👇 Нажми кнопку, чтобы перейти дальше"
+				btn_text = (block.get("gate_button_text") or "").strip() or "Дальше"
+				prompt_text = (block.get("gate_prompt_text") or "").strip() or " "
 				rem_sec = int(block.get("gate_reminder_seconds") or 0)
 				block_id = int(block.get("id") or 0)
 
@@ -452,19 +459,14 @@ async def render_flow(chat_id: int, flow: str):
 						]]
 					)
 				)
-				# ✅ после сообщения с inline кнопкой — сразу возвращаем reply-меню
-				await show_main_menu(chat_id)
 				return
 
 			# 4) delay for non-gate blocks
 			if delay > 0:
 				await asyncio.sleep(delay)
 
-		# ✅ после flow — ставим after-flow rules (через jobs)
+		# после flow — ставим after-flow rules (через jobs)
 		await _schedule_after_flow_actions(chat_id, flow)
-
-		# ✅ и возвращаем reply-меню, чтобы "квадратик" не пропадал
-		await show_main_menu(chat_id)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -519,12 +521,12 @@ async def jobs_loop():
 					try:
 						if job_key.startswith("flow:"):
 							flow = job_key.split(":", 1)[1].strip()
-							# ✅ flow jobs отправляем только если mode auto
+							# flow jobs отправляем только если mode auto
 							if flow and _mode(flow) == "auto":
 								await render_flow(uid, flow)
 
 						elif job_key.startswith("action:"):
-							# ✅ actions выполняются независимо от mode (это after-flow логика)
+							# actions выполняются независимо от mode (after-flow логика)
 							aid_s = job_key.split(":", 1)[1].strip()
 							try:
 								aid = int(aid_s)
@@ -555,8 +557,8 @@ async def jobs_loop():
 								if block_id > 0 and await is_gate_pressed(uid, block_id):
 									pass
 								else:
-									btn_text = "✅ Дальше"
-									text = "Напоминание: нажми кнопку, чтобы перейти дальше 👇"
+									btn_text = "Дальше"
+									text = " "
 									try:
 										b = await get_block(block_id)
 										if b:
@@ -581,8 +583,6 @@ async def jobs_loop():
 											]]
 										)
 									)
-									# ✅ после inline — вернуть reply-меню
-									await show_main_menu(uid)
 
 					finally:
 						await mark_job_done(jid)
@@ -606,27 +606,26 @@ async def cmd_start(message: Message):
 
 	await inc_start(uid, username)
 
-	# обновляем режимы и ставим расписание из CRM
 	await refresh_flow_modes()
 	await schedule_from_flow_triggers(uid)
 
-	# ✅ НИКАКИХ render_flow("welcome") / render_flow("day1") тут нет.
-	# Всё управление — через CRM triggers + after-flow rules.
-	await show_main_menu(uid, text="👇")
+	# НИЧЕГО не шлём в чат.
+	# Меню появится, когда придёт welcome (если он настроен в CRM как auto после /start).
+	# Если welcome не настроен — меню не появится, и это правильно.
+	return
 
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
-	await show_main_menu(message.from_user.id, text="👇")
+	# единственная команда, которая может "вернуть" клаву без текста-мусора:
+	await message.answer(" ", reply_markup=reply_main_menu())
 
 
 @dp.message(Command("lessons"))
 async def cmd_lessons(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
 	await message.answer("📚 <b>Уроки</b>\nВыбери день:", reply_markup=inline_lessons_menu())
-	# ✅ вернуть reply-меню чтобы не исчезало
-	await show_main_menu(message.from_user.id)
 
 
 @dp.message(Command("faq"))
@@ -638,21 +637,18 @@ async def cmd_faq(message: Message):
 		"• Видео внутри уроков\n"
 		f"• Поддержка: {SUPPORT_USERNAME}"
 	)
-	await show_main_menu(message.from_user.id)
 
 
 @dp.message(Command("web"))
 async def cmd_web(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
 	await message.answer("🌐 <b>Наш сайт</b>", reply_markup=inline_web_button())
-	await show_main_menu(message.from_user.id)
 
 
 @dp.message(Command("support"))
 async def cmd_support(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
 	await message.answer(f"🆘 Поддержка: {SUPPORT_USERNAME}")
-	await show_main_menu(message.from_user.id)
 
 
 @dp.message(F.text == "📚 Lessons")
@@ -686,8 +682,6 @@ async def cb_lesson(call: CallbackQuery):
 	flow = call.data.split(":", 1)[1].strip()
 	# manual запуск — разрешаем всегда
 	await render_flow(call.from_user.id, flow)
-	# render_flow сам вернет меню, но на всякий случай:
-	await show_main_menu(call.from_user.id)
 
 
 @dp.callback_query(F.data.startswith("gate:"))
@@ -702,7 +696,7 @@ async def cb_gate_next(call: CallbackQuery):
 		return
 
 	if call.from_user.id != target_uid:
-		await call.answer("Это не для тебя 🙂", show_alert=True)
+		await call.answer("Это не для тебя", show_alert=True)
 		return
 
 	if block_id > 0:
@@ -716,10 +710,8 @@ async def cb_gate_next(call: CallbackQuery):
 	except Exception:
 		pass
 
-	await call.answer("Ок! Поехали 🚀")
+	await call.answer()
 	await render_flow(target_uid, next_flow)
-	# render_flow сам вернет меню, но на всякий случай:
-	await show_main_menu(target_uid)
 
 
 @dp.message()
