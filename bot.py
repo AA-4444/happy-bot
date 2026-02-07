@@ -94,14 +94,6 @@ def reply_main_menu() -> ReplyKeyboardMarkup:
 	)
 
 
-async def show_main_menu(chat_id: int, text: str = "Меню 👇") -> None:
-	# ✅ всегда возвращаем reply-клавиатуру отдельным последним сообщением
-	# чтобы Telegram (особенно iOS) снова показал второе меню (кнопка-квадратик).
-	try:
-		await bot.send_message(chat_id, text, reply_markup=reply_main_menu())
-	except Exception:
-		# если вдруг не отправилось — не валим поток
-		pass
 
 
 def inline_web_button() -> InlineKeyboardMarkup:
