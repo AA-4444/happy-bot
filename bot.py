@@ -83,13 +83,25 @@ async def refresh_flow_modes():
 # UI
 
 def reply_main_menu() -> ReplyKeyboardMarkup:
+	# ✅ is_persistent=True — чтобы "квадратик меню" на iOS не исчезал
 	return ReplyKeyboardMarkup(
 		keyboard=[
 			[KeyboardButton(text="📚 Lessons"), KeyboardButton(text="❓ FAQ")],
 			[KeyboardButton(text="🌐 Web"), KeyboardButton(text="🆘 Support")],
 		],
 		resize_keyboard=True,
+		is_persistent=True,
 	)
+
+
+async def show_main_menu(chat_id: int, text: str = "Меню 👇") -> None:
+	# ✅ всегда возвращаем reply-клавиатуру отдельным последним сообщением
+	# чтобы Telegram (особенно iOS) снова показал второе меню (кнопка-квадратик).
+	try:
+		await bot.send_message(chat_id, text, reply_markup=reply_main_menu())
+	except Exception:
+		# если вдруг не отправилось — не валим поток
+		pass
 
 
 def inline_web_button() -> InlineKeyboardMarkup:
@@ -448,6 +460,8 @@ async def render_flow(chat_id: int, flow: str):
 						]]
 					)
 				)
+				# ✅ после сообщения с inline кнопкой — сразу возвращаем reply-меню
+				await show_main_menu(chat_id)
 				return
 
 			# 4) delay for non-gate blocks
@@ -456,6 +470,9 @@ async def render_flow(chat_id: int, flow: str):
 
 		# ✅ после flow — ставим after-flow rules (через jobs)
 		await _schedule_after_flow_actions(chat_id, flow)
+
+		# ✅ и возвращаем reply-меню, чтобы "квадратик" не пропадал
+		await show_main_menu(chat_id)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -572,6 +589,8 @@ async def jobs_loop():
 											]]
 										)
 									)
+									# ✅ после inline — вернуть reply-меню
+									await show_main_menu(uid)
 
 					finally:
 						await mark_job_done(jid)
@@ -601,19 +620,21 @@ async def cmd_start(message: Message):
 
 	# ✅ НИКАКИХ render_flow("welcome") / render_flow("day1") тут нет.
 	# Всё управление — через CRM triggers + after-flow rules.
-	await message.answer("", reply_markup=reply_main_menu())
+	await show_main_menu(uid, text="Меню 👇")
 
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
-	await message.answer("Меню 👇", reply_markup=reply_main_menu())
+	await show_main_menu(message.from_user.id, text="Меню 👇")
 
 
 @dp.message(Command("lessons"))
 async def cmd_lessons(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
 	await message.answer("📚 <b>Уроки</b>\nВыбери день:", reply_markup=inline_lessons_menu())
+	# ✅ вернуть reply-меню чтобы не исчезало
+	await show_main_menu(message.from_user.id)
 
 
 @dp.message(Command("faq"))
@@ -625,18 +646,21 @@ async def cmd_faq(message: Message):
 		"• Видео внутри уроков\n"
 		f"• Поддержка: {SUPPORT_USERNAME}"
 	)
+	await show_main_menu(message.from_user.id)
 
 
 @dp.message(Command("web"))
 async def cmd_web(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
 	await message.answer("🌐 <b>Наш сайт</b>", reply_markup=inline_web_button())
+	await show_main_menu(message.from_user.id)
 
 
 @dp.message(Command("support"))
 async def cmd_support(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
 	await message.answer(f"🆘 Поддержка: {SUPPORT_USERNAME}")
+	await show_main_menu(message.from_user.id)
 
 
 @dp.message(F.text == "📚 Lessons")
@@ -670,6 +694,8 @@ async def cb_lesson(call: CallbackQuery):
 	flow = call.data.split(":", 1)[1].strip()
 	# manual запуск — разрешаем всегда
 	await render_flow(call.from_user.id, flow)
+	# render_flow сам вернет меню, но на всякий случай:
+	await show_main_menu(call.from_user.id)
 
 
 @dp.callback_query(F.data.startswith("gate:"))
@@ -700,6 +726,8 @@ async def cb_gate_next(call: CallbackQuery):
 
 	await call.answer("Ок! Поехали 🚀")
 	await render_flow(target_uid, next_flow)
+	# render_flow сам вернет меню, но на всякий случай:
+	await show_main_menu(target_uid)
 
 
 @dp.message()
