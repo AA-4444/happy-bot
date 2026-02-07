@@ -607,6 +607,8 @@ async def jobs_loop():
 # ─────────────────────────────────────────────────────────────
 		# Handlers
 		
+		EMPTY = "\u200b"  # Telegram не принимает пустой текст, это "визуально пусто"
+		
 		@dp.message(CommandStart())
 		async def cmd_start(message: Message):
 			uid = message.from_user.id
@@ -614,38 +616,25 @@ async def jobs_loop():
 		
 			await inc_start(uid, username)
 		
-			# обновляем режимы и ставим расписание из CRM
 			await refresh_flow_modes()
 			await schedule_from_flow_triggers(uid)
 		
-			# показываем нижнее меню без текста
-			try:
-				await message.answer("", reply_markup=reply_main_menu())
-			except Exception:
-				pass
+			# показать меню "без текста" (но не пустой строкой!)
+			await message.answer(EMPTY, reply_markup=reply_main_menu())
 		
 		
 		@dp.message(Command("menu"))
 		async def cmd_menu(message: Message):
 			await inc_message(message.from_user.id, message.from_user.username or "")
-		
-			# показываем нижнее меню без текста
-			try:
-				await message.answer("", reply_markup=reply_main_menu())
-			except Exception:
-				pass
+			await message.answer(EMPTY, reply_markup=reply_main_menu())
 		
 		
 		@dp.message(Command("lessons"))
 		async def cmd_lessons(message: Message):
 			await inc_message(message.from_user.id, message.from_user.username or "")
 			await message.answer("📚 <b>Уроки</b>\nВыбери день:", reply_markup=inline_lessons_menu())
-		
-			# ✅ вернуть нижнее меню (reply keyboard) чтобы не “пропадало” — без текста
-			try:
-				await message.answer("", reply_markup=reply_main_menu())
-			except Exception:
-				pass
+			# вернуть нижнее меню, чтобы не исчезало
+			await message.answer(EMPTY, reply_markup=reply_main_menu())
 		
 		
 		@dp.message(Command("faq"))
@@ -657,36 +646,21 @@ async def jobs_loop():
 				"• Видео внутри уроков\n"
 				f"• Поддержка: {SUPPORT_USERNAME}"
 			)
-		
-			# ✅ вернуть нижнее меню без текста
-			try:
-				await message.answer("", reply_markup=reply_main_menu())
-			except Exception:
-				pass
+			await message.answer(EMPTY, reply_markup=reply_main_menu())
 		
 		
 		@dp.message(Command("web"))
 		async def cmd_web(message: Message):
 			await inc_message(message.from_user.id, message.from_user.username or "")
 			await message.answer("🌐 <b>Наш сайт</b>", reply_markup=inline_web_button())
-		
-			# ✅ вернуть нижнее меню без текста
-			try:
-				await message.answer("", reply_markup=reply_main_menu())
-			except Exception:
-				pass
+			await message.answer(EMPTY, reply_markup=reply_main_menu())
 		
 		
 		@dp.message(Command("support"))
 		async def cmd_support(message: Message):
 			await inc_message(message.from_user.id, message.from_user.username or "")
 			await message.answer(f"🆘 Поддержка: {SUPPORT_USERNAME}")
-		
-			# ✅ вернуть нижнее меню без текста
-			try:
-				await message.answer("", reply_markup=reply_main_menu())
-			except Exception:
-				pass
+			await message.answer(EMPTY, reply_markup=reply_main_menu())
 		
 		
 		@dp.message(F.text == "📚 Lessons")
