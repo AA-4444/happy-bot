@@ -27,6 +27,9 @@ from db import (
 
 	# ✅ flow actions (after flow -> start flow)
 	get_flow_actions, upsert_flow_action, delete_flow_action,
+
+	# ✅ broadcasts (new)
+	list_broadcasts, create_broadcast, delete_broadcast, set_broadcast_active,
 )
 
 from seed import seed as run_seed  # ✅ автосид
@@ -104,8 +107,28 @@ def _norm_mode(mode: str) -> str:
 	return m
 
 
+# broadcasts helpers
+def _norm_schedule_type(t: str) -> str:
+	tt = (t or "").strip().lower()
+	return tt if tt in ("monthly", "interval_days") else "monthly"
+
+
+def _norm_days_of_month(s: str) -> str:
+	# keep raw csv, db will sanitize to [1] fallback internally
+	ss = (s or "").strip()
+	return ss or "1"
+
+
+def _clamp_int(v: int, lo: int, hi: int) -> int:
+	try:
+		vv = int(v)
+	except Exception:
+		vv = lo
+	return max(lo, min(hi, vv))
+
+
 # ─────────────────────────────────────────────────────────────
-# INDEX (FLOWS + STATS + TRIGGERS + MODES + ACTIONS)
+# INDEX (FLOWS + STATS + USERS + TRIGGERS + MODES + ACTIONS + BROADCASTS)
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -166,11 +189,23 @@ async def index(request: Request):
 	except Exception:
 		actions = []
 
-	# подготовим value/unit для UI (если сделаешь секцию в index.html)
 	for a in actions:
 		val, unit = _seconds_to_value_unit(int(a.get("delay_seconds", 0) or 0), preferred_unit="minutes")
 		a["delay_value"] = int(val)
 		a["delay_unit"] = unit
+
+	# ✅ broadcasts list (new)
+	try:
+		broadcasts = await list_broadcasts()
+	except Exception:
+		broadcasts = []
+
+	for b in broadcasts:
+		# convenient derived fields for template
+		b["is_all_users"] = (b.get("target_user_id") is None)
+		b["schedule_type"] = _norm_schedule_type(b.get("schedule_type", "monthly"))
+		b["at_hour"] = int(b.get("at_hour", 12) or 12)
+		b["at_minute"] = int(b.get("at_minute", 0) or 0)
 
 	return templates.TemplateResponse(
 		"index.html",
@@ -179,8 +214,9 @@ async def index(request: Request):
 			"flows": flows,
 			"stats": stats,
 			"users": users,
-			"triggers": triggers_map,  # triggers[flow]["mode"] уже здесь
-			"actions": actions,        # ✅ flow_actions для UI
+			"triggers": triggers_map,   # triggers[flow]["mode"] уже здесь
+			"actions": actions,         # ✅ flow_actions для UI
+			"broadcasts": broadcasts,   # ✅ new recurring broadcasts
 		},
 	)
 
@@ -287,6 +323,89 @@ async def flow_action_upsert(
 async def flow_action_delete(action_id: int):
 	try:
 		await delete_flow_action(int(action_id))
+	except Exception:
+		pass
+	return RedirectResponse("/", status_code=302)
+
+
+# ─────────────────────────────────────────────────────────────
+# BROADCASTS (NEW): recurring start_flow to all users or one user
+
+@app.post("/broadcast/new")
+async def broadcast_new(
+	title: str = Form(""),
+	flow: str = Form(""),
+
+	# targeting
+	target_mode: str = Form("all"),     # all | user
+	target_user_id: int = Form(0),
+
+	# schedule
+	schedule_type: str = Form("monthly"),   # monthly | interval_days
+	days_of_month: str = Form("1"),         # "1" or "1,15"
+	interval_days: int = Form(30),          # for interval_days
+	at_hour: int = Form(12),
+	at_minute: int = Form(0),
+
+	is_active: int = Form(1),
+):
+	flow = (flow or "").strip()
+	if not flow:
+		return RedirectResponse("/", status_code=302)
+
+	title = (title or "").strip() or f"Broadcast: {flow}"
+
+	target_mode = (target_mode or "all").strip().lower()
+	if target_mode not in ("all", "user"):
+		target_mode = "all"
+
+	tuid: Optional[int] = None
+	if target_mode == "user":
+		try:
+			tuid = int(target_user_id)
+		except Exception:
+			tuid = None
+		if not tuid or tuid <= 0:
+			# если выбрали user но не дали id — просто не создаём
+			return RedirectResponse("/", status_code=302)
+
+	schedule_type = _norm_schedule_type(schedule_type)
+	days_of_month = _norm_days_of_month(days_of_month)
+	interval_days = int(interval_days or 30)
+	if interval_days < 1:
+		interval_days = 1
+
+	at_hour = _clamp_int(at_hour, 0, 23)
+	at_minute = _clamp_int(at_minute, 0, 59)
+
+	await create_broadcast(
+		title=title,
+		flow=flow,
+		target_user_id=tuid,
+		schedule_type=schedule_type,
+		interval_days=interval_days,
+		days_of_month=days_of_month,
+		at_hour=at_hour,
+		at_minute=at_minute,
+		is_active=1 if int(is_active) else 0,
+	)
+
+	return RedirectResponse("/", status_code=302)
+
+
+@app.post("/broadcast/{broadcast_id}/delete")
+async def broadcast_delete(broadcast_id: int):
+	try:
+		await delete_broadcast(int(broadcast_id))
+	except Exception:
+		pass
+	return RedirectResponse("/", status_code=302)
+
+
+@app.post("/broadcast/{broadcast_id}/toggle")
+async def broadcast_toggle(broadcast_id: int, is_active: int = Form(1)):
+	try:
+		await set_broadcast_active(int(broadcast_id), 1 if int(is_active) else 0)
 	except Exception:
 		pass
 	return RedirectResponse("/", status_code=302)
@@ -484,7 +603,6 @@ async def edit_block_page(request: Request, block_id: int):
 	block["buttons_json"] = block.get("buttons", "")
 
 	# ✅ delay: секунд -> value+unit (для UI, чтобы не вводить 3600)
-	# сохраняем в block["delay_value"], block["delay_unit"]
 	delay_sec = int(float(block.get("delay", 1.0) or 0))
 	dv, du = _seconds_to_value_unit(delay_sec, preferred_unit="minutes")
 	block["delay_value"] = int(dv)

@@ -34,6 +34,9 @@ from db import (
 	mark_gate_pressed,
 	is_gate_pressed,
 	mark_job_done_by_user_flow,
+
+	# for broadcasts (all users)
+	get_users,
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -55,8 +58,17 @@ _jobs_task: asyncio.Task | None = None
 # кеш режимов флоу
 _FLOW_MODES: dict[str, str] = {}
 
-# 🔒 пер-юзер лок, чтобы не было параллельного render_flow
+# per-user lock, чтобы не было параллельного render_flow на одного юзера
 _USER_LOCKS: dict[int, asyncio.Lock] = {}
+
+# защита от дублей jobs пока задача в процессе
+_RUNNING_JOBS: set[int] = set()
+
+# ограничим общий параллелизм джобов, чтобы не убить бот/DB
+_JOB_SEM = asyncio.Semaphore(int(os.getenv("JOBS_CONCURRENCY", "25")))
+
+# как часто подтягивать режимы из БД (если в CRM переключили mode без рестарта бота)
+_FLOW_MODES_REFRESH_SECONDS = int(os.getenv("FLOW_MODES_REFRESH_SECONDS", "20"))
 
 
 def _lock(uid: int) -> asyncio.Lock:
@@ -71,7 +83,7 @@ def _mode(flow: str) -> str:
 	return (_FLOW_MODES.get((flow or "").strip()) or "off").strip().lower()
 
 
-async def refresh_flow_modes():
+async def refresh_flow_modes() -> None:
 	global _FLOW_MODES
 	try:
 		_FLOW_MODES = await get_flow_modes()
@@ -363,7 +375,6 @@ async def _schedule_after_flow_actions(user_id: int, after_flow: str) -> None:
 
 # ─────────────────────────────────────────────────────────────
 # Flow rendering (serialized per user)
-# ВАЖНО: reply keyboard вешаем ТОЛЬКО на первый текст welcome, один раз.
 
 async def render_flow(chat_id: int, flow: str):
 	flow = (flow or "").strip()
@@ -381,7 +392,7 @@ async def render_flow(chat_id: int, flow: str):
 			delay = float(block.get("delay", 1.0) or 0)
 			kb = build_buttons_kb(block.get("buttons"))
 
-			# Вешаем reply-меню ТОЛЬКО на welcome, только на текстовые сообщения.
+			# reply keyboard прикрепляем только один раз на тексте welcome
 			attach_reply_menu = (flow == "welcome" and t in ("text", "", None) and bool(block.get("text")))
 
 			# 1) content
@@ -413,7 +424,6 @@ async def render_flow(chat_id: int, flow: str):
 						await bot.send_message(chat_id, msg)
 
 			elif t == "text" and block.get("text"):
-				# вот тут — единственное место, где reply keyboard реально прикрепляем
 				if attach_reply_menu:
 					await bot.send_message(chat_id, block["text"], reply_markup=reply_main_menu())
 				else:
@@ -505,92 +515,181 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────
-# Jobs worker
+# Broadcast support via jobs key
+#
+# job_key формат (поддержка нескольких вариантов):
+# 1) broadcast:<flow>:all:<repeat_seconds>
+# 2) broadcast:<flow>:<user_id>:<repeat_seconds>
+# 3) broadcast:<flow>            (в текущий uid)
+#
+# Если repeat_seconds > 0 — пересоздаём этот же job на +repeat_seconds.
+
+async def _run_broadcast_job(current_uid: int, job_key: str) -> None:
+	parts = job_key.split(":")
+	# broadcast:<flow>:<audience>:<repeat>
+	flow = ""
+	audience = ""
+	repeat = 0
+
+	if len(parts) >= 2:
+		flow = (parts[1] or "").strip()
+
+	if len(parts) >= 3:
+		audience = (parts[2] or "").strip().lower()
+
+	if len(parts) >= 4:
+		try:
+			repeat = int(parts[3] or 0)
+		except Exception:
+			repeat = 0
+
+	if not flow:
+		return
+
+	if audience == "all":
+		try:
+			users = await get_users(50000)
+		except Exception:
+			users = []
+		for u in users:
+			try:
+				uid = int(u.get("user_id") or 0)
+			except Exception:
+				uid = 0
+			if uid > 0:
+				# НЕ await, чтобы не блокировать весь broadcast на долгих flow.
+				# Внутри render_flow есть per-user lock.
+				asyncio.create_task(render_flow(uid, flow))
+	elif audience.isdigit():
+		uid = int(audience)
+		if uid > 0:
+			await render_flow(uid, flow)
+	else:
+		# fallback: шлём текущему user_id из jobs
+		await render_flow(current_uid, flow)
+
+	# повтор
+	if repeat > 0:
+		now = int(time.time())
+		await upsert_job(int(current_uid), job_key, now + repeat)
+
+
+# ─────────────────────────────────────────────────────────────
+# Jobs worker (НЕ блокируем очередь ожиданием render_flow)
+
+async def _execute_job_and_mark_done(jid: int, uid: int, job_key: str) -> None:
+	# общий лимит параллельных джобов
+	async with _JOB_SEM:
+		try:
+			# 1) flow:<name> — только если mode=auto
+			if job_key.startswith("flow:"):
+				flow = job_key.split(":", 1)[1].strip()
+				if flow and _mode(flow) == "auto":
+					await render_flow(uid, flow)
+
+			# 2) action:<id> — независимо от mode
+			elif job_key.startswith("action:"):
+				aid_s = job_key.split(":", 1)[1].strip()
+				try:
+					aid = int(aid_s)
+				except Exception:
+					aid = 0
+
+				if aid > 0:
+					try:
+						actions = await get_flow_actions(None)
+					except Exception:
+						actions = []
+
+					target = ""
+					for a in actions or []:
+						if int(a.get("id") or 0) == aid and int(a.get("is_active") or 0) == 1:
+							target = (a.get("target_flow") or "").strip()
+							break
+
+					if target:
+						await render_flow(uid, target)
+
+			# 3) gate:<block_id>:<next_flow>
+			elif job_key.startswith("gate:"):
+				parts = job_key.split(":", 2)
+				if len(parts) == 3:
+					block_id = int(parts[1])
+					next_flow = parts[2].strip()
+
+					if block_id > 0 and await is_gate_pressed(uid, block_id):
+						pass
+					else:
+						btn_text = "Дальше"
+						text = " "
+						try:
+							b = await get_block(block_id)
+							if b:
+								custom = (b.get("gate_reminder_text") or "").strip()
+								if custom:
+									text = custom
+								bt = (b.get("gate_button_text") or "").strip()
+								if bt:
+									btn_text = bt
+						except Exception:
+							pass
+
+						await bot.send_message(
+							uid,
+							text,
+							reply_markup=InlineKeyboardMarkup(
+								inline_keyboard=[[
+									InlineKeyboardButton(
+										text=btn_text,
+										callback_data=_gate_cb(uid, block_id, next_flow)
+									)
+								]]
+							)
+						)
+
+			# 4) broadcast:* (новый функционал)
+			elif job_key.startswith("broadcast:"):
+				await _run_broadcast_job(uid, job_key)
+
+		finally:
+			# помечаем done в БД в самом конце (важно)
+			try:
+				await mark_job_done(jid)
+			finally:
+				_RUNNING_JOBS.discard(int(jid))
+
 
 async def jobs_loop():
+	last_modes_refresh = 0
+
 	try:
 		while True:
 			try:
+				now = int(time.time())
+
+				# периодически подтягиваем режимы из БД
+				if now - last_modes_refresh >= _FLOW_MODES_REFRESH_SECONDS:
+					last_modes_refresh = now
+					await refresh_flow_modes()
+
 				due = await fetch_due_jobs(50)
 
 				for job in due:
-					jid = job["id"]
-					uid = job["user_id"]
+					jid = int(job["id"])
+					if jid in _RUNNING_JOBS:
+						continue
+					_RUNNING_JOBS.add(jid)
+
+					uid = int(job["user_id"])
 					job_key = (job.get("flow") or "").strip()
 
-					try:
-						if job_key.startswith("flow:"):
-							flow = job_key.split(":", 1)[1].strip()
-							# flow jobs отправляем только если mode auto
-							if flow and _mode(flow) == "auto":
-								await render_flow(uid, flow)
-
-						elif job_key.startswith("action:"):
-							# actions выполняются независимо от mode (after-flow логика)
-							aid_s = job_key.split(":", 1)[1].strip()
-							try:
-								aid = int(aid_s)
-							except Exception:
-								aid = 0
-
-							if aid > 0:
-								try:
-									actions = await get_flow_actions(None)
-								except Exception:
-									actions = []
-
-								target = ""
-								for a in actions or []:
-									if int(a.get("id") or 0) == aid and int(a.get("is_active") or 0) == 1:
-										target = (a.get("target_flow") or "").strip()
-										break
-
-								if target:
-									await render_flow(uid, target)
-
-						elif job_key.startswith("gate:"):
-							parts = job_key.split(":", 2)
-							if len(parts) == 3:
-								block_id = int(parts[1])
-								next_flow = parts[2].strip()
-
-								if block_id > 0 and await is_gate_pressed(uid, block_id):
-									pass
-								else:
-									btn_text = "Дальше"
-									text = " "
-									try:
-										b = await get_block(block_id)
-										if b:
-											custom = (b.get("gate_reminder_text") or "").strip()
-											if custom:
-												text = custom
-											bt = (b.get("gate_button_text") or "").strip()
-											if bt:
-												btn_text = bt
-									except Exception:
-										pass
-
-									await bot.send_message(
-										uid,
-										text,
-										reply_markup=InlineKeyboardMarkup(
-											inline_keyboard=[[
-												InlineKeyboardButton(
-													text=btn_text,
-													callback_data=_gate_cb(uid, block_id, next_flow)
-												)
-											]]
-										)
-									)
-
-					finally:
-						await mark_job_done(jid)
+					# ВАЖНО: не await — иначе очередь блокируется (и delay превращается в 10+ секунд)
+					asyncio.create_task(_execute_job_and_mark_done(jid, uid, job_key))
 
 			except Exception:
 				pass
 
-			await asyncio.sleep(2)
+			await asyncio.sleep(1)
 
 	except asyncio.CancelledError:
 		return
@@ -609,16 +708,14 @@ async def cmd_start(message: Message):
 	await refresh_flow_modes()
 	await schedule_from_flow_triggers(uid)
 
-	# НИЧЕГО не шлём в чат.
-	# Меню появится, когда придёт welcome (если он настроен в CRM как auto после /start).
-	# Если welcome не настроен — меню не появится, и это правильно.
+	# Ничего не шлём в чат.
 	return
 
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
-	# единственная команда, которая может "вернуть" клаву без текста-мусора:
+	# единственная команда, которая "возвращает" клаву без текста
 	await message.answer(" ", reply_markup=reply_main_menu())
 
 
@@ -680,7 +777,6 @@ async def cb_lesson(call: CallbackQuery):
 	await call.answer()
 	await inc_message(call.from_user.id, call.from_user.username or "")
 	flow = call.data.split(":", 1)[1].strip()
-	# manual запуск — разрешаем всегда
 	await render_flow(call.from_user.id, flow)
 
 
