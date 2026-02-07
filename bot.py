@@ -633,7 +633,7 @@ async def cmd_faq(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
 	await message.answer(
 		"❓ <b>FAQ</b>\n\n"
-		"• Курс длится 3 дня\n"
+		"• Курс состоит из 3 уроков\n"
 		"• Видео внутри уроков\n"
 		f"• Поддержка: {SUPPORT_USERNAME}"
 	)
