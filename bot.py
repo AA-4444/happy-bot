@@ -42,7 +42,7 @@ if not BOT_TOKEN:
 
 CRM_BASE_URL = (os.getenv("CRM_BASE_URL") or "").strip().rstrip("/")
 
-SUPPORT_USERNAME = "@client_support"
+SUPPORT_USERNAME = "@TataZakzheva"
 WEB_URL = "https://www.happi10.com"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
