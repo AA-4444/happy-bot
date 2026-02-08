@@ -46,7 +46,12 @@ if not BOT_TOKEN:
 CRM_BASE_URL = (os.getenv("CRM_BASE_URL") or "").strip().rstrip("/")
 
 SUPPORT_USERNAME = "@TataZakzheva"
+
+
 WEB_URL = "https://www.happi10.com"
+
+
+CLUB_URL = "https://www.happi10.com/programs"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -99,7 +104,8 @@ def reply_main_menu() -> ReplyKeyboardMarkup:
 	return ReplyKeyboardMarkup(
 		keyboard=[
 			[KeyboardButton(text="📚 Lessons"), KeyboardButton(text="❓ FAQ")],
-			[KeyboardButton(text="🌐 Web"), KeyboardButton(text="🆘 Support")],
+			[KeyboardButton(text="🌐 Web"), KeyboardButton(text="🏛️ Клуб Архитектора Счастья")],
+			[KeyboardButton(text="🆘 Support")],
 		],
 		resize_keyboard=True,
 		is_persistent=True,
@@ -109,6 +115,12 @@ def reply_main_menu() -> ReplyKeyboardMarkup:
 def inline_web_button() -> InlineKeyboardMarkup:
 	return InlineKeyboardMarkup(
 		inline_keyboard=[[InlineKeyboardButton(text="🌐 Перейти на сайт", url=WEB_URL)]]
+	)
+
+
+def inline_club_button() -> InlineKeyboardMarkup:
+	return InlineKeyboardMarkup(
+		inline_keyboard=[[InlineKeyboardButton(text="🏛️ Клуб Архитектора Счастья", url=CLUB_URL)]]
 	)
 
 
@@ -475,7 +487,6 @@ async def render_flow(chat_id: int, flow: str):
 			if delay > 0:
 				await asyncio.sleep(delay)
 
-		# после flow — ставим after-flow rules (через jobs)
 		await _schedule_after_flow_actions(chat_id, flow)
 
 
@@ -502,7 +513,6 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 			if offset_seconds < 0:
 				continue
 
-			# только если flow mode = auto
 			if _mode(flow) != "auto":
 				continue
 
@@ -516,17 +526,9 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 
 # ─────────────────────────────────────────────────────────────
 # Broadcast support via jobs key
-#
-# job_key формат (поддержка нескольких вариантов):
-# 1) broadcast:<flow>:all:<repeat_seconds>
-# 2) broadcast:<flow>:<user_id>:<repeat_seconds>
-# 3) broadcast:<flow>            (в текущий uid)
-#
-# Если repeat_seconds > 0 — пересоздаём этот же job на +repeat_seconds.
 
 async def _run_broadcast_job(current_uid: int, job_key: str) -> None:
 	parts = job_key.split(":")
-	# broadcast:<flow>:<audience>:<repeat>
 	flow = ""
 	audience = ""
 	repeat = 0
@@ -557,18 +559,14 @@ async def _run_broadcast_job(current_uid: int, job_key: str) -> None:
 			except Exception:
 				uid = 0
 			if uid > 0:
-				# НЕ await, чтобы не блокировать весь broadcast на долгих flow.
-				# Внутри render_flow есть per-user lock.
 				asyncio.create_task(render_flow(uid, flow))
 	elif audience.isdigit():
 		uid = int(audience)
 		if uid > 0:
 			await render_flow(uid, flow)
 	else:
-		# fallback: шлём текущему user_id из jobs
 		await render_flow(current_uid, flow)
 
-	# повтор
 	if repeat > 0:
 		now = int(time.time())
 		await upsert_job(int(current_uid), job_key, now + repeat)
@@ -578,16 +576,13 @@ async def _run_broadcast_job(current_uid: int, job_key: str) -> None:
 # Jobs worker (НЕ блокируем очередь ожиданием render_flow)
 
 async def _execute_job_and_mark_done(jid: int, uid: int, job_key: str) -> None:
-	# общий лимит параллельных джобов
 	async with _JOB_SEM:
 		try:
-			# 1) flow:<name> — только если mode=auto
 			if job_key.startswith("flow:"):
 				flow = job_key.split(":", 1)[1].strip()
 				if flow and _mode(flow) == "auto":
 					await render_flow(uid, flow)
 
-			# 2) action:<id> — независимо от mode
 			elif job_key.startswith("action:"):
 				aid_s = job_key.split(":", 1)[1].strip()
 				try:
@@ -610,7 +605,6 @@ async def _execute_job_and_mark_done(jid: int, uid: int, job_key: str) -> None:
 					if target:
 						await render_flow(uid, target)
 
-			# 3) gate:<block_id>:<next_flow>
 			elif job_key.startswith("gate:"):
 				parts = job_key.split(":", 2)
 				if len(parts) == 3:
@@ -647,12 +641,10 @@ async def _execute_job_and_mark_done(jid: int, uid: int, job_key: str) -> None:
 							)
 						)
 
-			# 4) broadcast:* (новый функционал)
 			elif job_key.startswith("broadcast:"):
 				await _run_broadcast_job(uid, job_key)
 
 		finally:
-			# помечаем done в БД в самом конце (важно)
 			try:
 				await mark_job_done(jid)
 			finally:
@@ -667,7 +659,6 @@ async def jobs_loop():
 			try:
 				now = int(time.time())
 
-				# периодически подтягиваем режимы из БД
 				if now - last_modes_refresh >= _FLOW_MODES_REFRESH_SECONDS:
 					last_modes_refresh = now
 					await refresh_flow_modes()
@@ -683,7 +674,6 @@ async def jobs_loop():
 					uid = int(job["user_id"])
 					job_key = (job.get("flow") or "").strip()
 
-					# ВАЖНО: не await — иначе очередь блокируется (и delay превращается в 10+ секунд)
 					asyncio.create_task(_execute_job_and_mark_done(jid, uid, job_key))
 
 			except Exception:
@@ -707,15 +697,12 @@ async def cmd_start(message: Message):
 
 	await refresh_flow_modes()
 	await schedule_from_flow_triggers(uid)
-
-	# Ничего не шлём в чат.
 	return
 
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
-	# единственная команда, которая "возвращает" клаву без текста
 	await message.answer(" ", reply_markup=reply_main_menu())
 
 
@@ -742,6 +729,12 @@ async def cmd_web(message: Message):
 	await message.answer("🌐 <b>Наш сайт</b>", reply_markup=inline_web_button())
 
 
+@dp.message(Command("club"))
+async def cmd_club(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await message.answer("🏛️ <b>Клуб Архитектора Счастья</b>", reply_markup=inline_club_button())
+
+
 @dp.message(Command("support"))
 async def cmd_support(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
@@ -764,6 +757,12 @@ async def btn_faq(message: Message):
 async def btn_web(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
 	await cmd_web(message)
+
+
+@dp.message(F.text == "🏛️ Клуб Архитектора Счастья")
+async def btn_club(message: Message):
+	await inc_message(message.from_user.id, message.from_user.username or "")
+	await cmd_club(message)
 
 
 @dp.message(F.text == "🆘 Support")
@@ -831,6 +830,7 @@ async def on_startup():
 		BotCommand(command="lessons", description="Уроки"),
 		BotCommand(command="faq", description="FAQ"),
 		BotCommand(command="web", description="Сайт"),
+		BotCommand(command="club", description="Клуб Архитектора Счастья"),
 		BotCommand(command="support", description="Поддержка"),
 	])
 
