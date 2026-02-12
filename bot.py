@@ -32,7 +32,7 @@ from db import (
 	is_gate_pressed,
 	mark_job_done_by_user_flow,
 	get_users,
-	get_pool,  # ✅ используем pool, чтобы хранить user-state в таблице users
+	get_pool,  # используем users.state как JSON
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -56,28 +56,17 @@ dp = Dispatcher()
 
 _jobs_task: asyncio.Task | None = None
 
-# кеш режимов флоу
 _FLOW_MODES: dict[str, str] = {}
-
-# per-user lock
 _USER_LOCKS: dict[int, asyncio.Lock] = {}
-
-# защита от дублей jobs
 _RUNNING_JOBS: set[int] = set()
 
-# общий параллелизм джобов
 _JOB_SEM = asyncio.Semaphore(int(os.getenv("JOBS_CONCURRENCY", "25")))
-
-# refresh flow modes
 _FLOW_MODES_REFRESH_SECONDS = int(os.getenv("FLOW_MODES_REFRESH_SECONDS", "20"))
 
-# ретраи отправки
 _SEND_RETRIES = int(os.getenv("SEND_RETRIES", "4"))
 _SEND_RETRY_BASE_SLEEP = float(os.getenv("SEND_RETRY_BASE_SLEEP", "1.0"))
 
-# ✅ какой flow считать "конец курса"
-# по умолчанию: day3
-# можно поменять на "final" или что у тебя финальное
+# какой flow считать "конец курса" (для unlock уроков)
 _COURSE_COMPLETE_FLOW = (os.getenv("COURSE_COMPLETE_FLOW") or "day3").strip()
 
 
@@ -101,20 +90,16 @@ async def refresh_flow_modes() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# ✅ user state (таблица users.state как JSON)
+# user state (users.state JSON)
 
 async def _get_user_state(user_id: int) -> Dict[str, Any]:
-	"""
-	Храним JSON в users.state.
-	Таблица users уже создаётся в init_db().
-	"""
 	pool = await get_pool()
 	async with pool.acquire() as conn:
 		row = await conn.fetchrow("SELECT state FROM users WHERE user_id=$1;", int(user_id))
 		if not row:
-			# создаём пустую запись
 			await conn.execute(
-				"INSERT INTO users(user_id, state, flow_status, last_start_at, updated_at) VALUES ($1,'{}','','','') ON CONFLICT (user_id) DO NOTHING;",
+				"INSERT INTO users(user_id, state, flow_status, last_start_at, updated_at) "
+				"VALUES ($1,'{}','','','') ON CONFLICT (user_id) DO NOTHING;",
 				int(user_id),
 			)
 			return {}
@@ -197,7 +182,7 @@ async def _safe_call(label: str, fn: Callable[[], Awaitable[Any]]) -> Any:
 
 
 # ─────────────────────────────────────────────────────────────
-# UI (✅ меню на русском + "Уроки" только после конца курса)
+# UI (меню на русском; "Уроки" только после конца курса)
 
 def reply_main_menu(lessons_unlocked: bool) -> ReplyKeyboardMarkup:
 	rows = [
@@ -205,7 +190,6 @@ def reply_main_menu(lessons_unlocked: bool) -> ReplyKeyboardMarkup:
 		[KeyboardButton(text="🌐 Сайт"), KeyboardButton(text="🏛️ Клуб Архитектора Счастья")],
 		[KeyboardButton(text="🆘 Поддержка")],
 	]
-	# ✅ Уроки появятся только когда unlocked
 	if lessons_unlocked:
 		rows.insert(0, [KeyboardButton(text="📚 Уроки")])
 
@@ -242,12 +226,10 @@ def build_buttons_kb(buttons_json: Optional[str]) -> Optional[InlineKeyboardMark
 	s = (buttons_json or "").strip()
 	if not s:
 		return None
-
 	try:
 		btns = json.loads(s)
 		if not isinstance(btns, list):
 			return None
-
 		rows = []
 		for b in btns:
 			if not isinstance(b, dict):
@@ -257,7 +239,6 @@ def build_buttons_kb(buttons_json: Optional[str]) -> Optional[InlineKeyboardMark
 			if not text or not url:
 				continue
 			rows.append([InlineKeyboardButton(text=text, url=url)])
-
 		return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 	except Exception:
 		return None
@@ -290,18 +271,14 @@ def _resolve_local_path(file_path: str) -> str:
 	p = (file_path or "").strip()
 	if not p:
 		return ""
-
 	if os.path.isabs(p):
 		return p
-
 	cand = os.path.join(BASE_DIR, p)
 	if os.path.exists(cand):
 		return cand
-
 	cand2 = os.path.join(BASE_DIR, "media", os.path.basename(p))
 	if os.path.exists(cand2):
 		return cand2
-
 	return ""
 
 
@@ -309,31 +286,25 @@ def _to_public_url(p: str) -> str:
 	p = (p or "").strip()
 	if not p:
 		return ""
-
 	if p.startswith("http://") or p.startswith("https://"):
 		return p
-
 	if p.startswith("media/"):
 		p = "/" + p
-
 	if p.startswith("/media/"):
 		if not CRM_BASE_URL:
 			return ""
 		return f"{CRM_BASE_URL}{p}"
-
 	return ""
 
 
 def _normalize_kind(kind: str, file_path: str) -> str:
 	k = (kind or "").strip().lower()
-
 	if k in ("image", "img", "photo", "picture"):
 		return "photo"
 	if k in ("file", "doc", "pdf"):
 		return "document"
 	if k in ("video", "audio", "document", "photo"):
 		return k
-
 	return _guess_kind_from_ext(file_path)
 
 
@@ -341,21 +312,14 @@ def _ensure_filename_with_ext(file_name: str, file_path: str) -> str:
 	fn = _safe_filename(file_name)
 	if not fn:
 		fn = os.path.basename((file_path or "").strip()) or "file"
-
 	if "." not in fn:
 		ext = os.path.splitext(file_path)[1]
 		if ext:
 			fn = fn + ext
-
 	return fn
 
 
-async def send_attachment(
-	chat_id: int,
-	file_path: str,
-	file_kind: str = "",
-	file_name: str = "",
-) -> None:
+async def send_attachment(chat_id: int, file_path: str, file_kind: str = "", file_name: str = "") -> None:
 	if not file_path:
 		return
 
@@ -461,7 +425,7 @@ def _job_resume(flow: str, start_pos: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# GATE
+# GATE callback
 
 def _gate_cb(user_id: int, block_id: int, next_flow: str) -> str:
 	return f"gate:{user_id}:{block_id}:{next_flow}"
@@ -476,48 +440,41 @@ async def _schedule_gate_reminder(user_id: int, block_id: int, next_flow: str, s
 
 
 # ─────────────────────────────────────────────────────────────
-# ✅ VIDEO gating (остановка флоу до клика)
+# VIDEO callback (1 клик -> открыть url + поставить delay -> продолжить)
 
 def _video_cb(user_id: int, block_id: int) -> str:
 	return f"video:{user_id}:{block_id}"
 
 
-async def _send_video_gate(chat_id: int, block: Dict[str, Any]) -> None:
+async def _send_video_gate(chat_id: int, block: Dict[str, Any], reply_menu: Optional[ReplyKeyboardMarkup] = None) -> None:
 	"""
-	Отправляем сообщение с кнопкой "Видео".
-	Дальше flow НЕ продолжается до нажатия.
-	CRM:
-	- title = текст над кнопкой (prompt)
-	- text = доп. текст (можешь использовать как описание)
-	- gate_button_text = текст кнопки (переиспользуем поле)
-	- delay_seconds = задержка после клика перед продолжением
+	Видео-блок:
+	- block.text = текст над кнопкой (редактируется в CRM)
+	- block.title = текст кнопки (редактируется в CRM). Если пусто -> "Смотри видео урок"
+	- block.video = url
+	- block.delay = задержка после клика перед продолжением
 	"""
 	block_id = int(block.get("id") or 0)
 	video_url = (block.get("video") or "").strip()
 	if not block_id or not video_url:
-		# если видео не заполнено — просто ничего не блокируем
 		return
 
-	prompt = (block.get("title") or "").strip() or "<b>Видео урок</b>"
-	descr = (block.get("text") or "").strip()
-	btn_text = (block.get("gate_button_text") or "").strip() or "▶️ Смотреть видео"
-
-	msg = prompt
-	if descr:
-		msg = f"{prompt}\n\n{descr}"
+	prompt_text = (block.get("text") or "").strip() or " "
+	btn_text = (block.get("title") or "").strip() or "Смотри видео урок"
 
 	await _safe_call(
 		f"send_message(video_gate) chat={chat_id}",
 		lambda: bot.send_message(
 			chat_id,
-			msg,
+			prompt_text,
 			reply_markup=InlineKeyboardMarkup(
-				inline_keyboard=[[
-					InlineKeyboardButton(text=btn_text, callback_data=_video_cb(chat_id, block_id))
-				]]
+				inline_keyboard=[[InlineKeyboardButton(text=btn_text, callback_data=_video_cb(chat_id, block_id))]]
+			) if reply_menu is None else InlineKeyboardMarkup(
+				inline_keyboard=[[InlineKeyboardButton(text=btn_text, callback_data=_video_cb(chat_id, block_id))]]
 			)
 		)
 	)
+	# reply_menu к видео-сообщению НЕ привязываем (по твоему требованию)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -572,8 +529,10 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 			log.exception("get_blocks failed flow=%s chat=%s", flow, chat_id)
 			return
 
-		# ✅ меню только один раз в welcome (на ПЕРВОМ сообщении)
-		menu_attached_once = False
+		# ✅ ТВОЁ ТРЕБОВАНИЕ:
+		# меню в welcome должно приклеиться к "сообщению после кружка" (которое идёт вторым)
+		saw_circle_in_welcome = False
+		menu_attached = False
 
 		for block in blocks:
 			try:
@@ -588,18 +547,25 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 				delay = float(block.get("delay", 1.0) or 0)
 				kb = build_buttons_kb(block.get("buttons"))
 
-				# ✅ attach menu only to FIRST text message in welcome
-				attach_reply_menu = False
-				if flow == "welcome" and (not menu_attached_once):
-					if (block.get("text") or "").strip() and t in ("text", "", None, "buttons"):
-						attach_reply_menu = True
+				# определяем, надо ли приклеить меню к этому блоку
+				attach_menu_here = False
+				if flow == "welcome" and (not menu_attached):
+					if t == "circle":
+						# меню НЕ сюда
+						pass
+					else:
+						# меню должно быть "на сообщении после кружка"
+						if saw_circle_in_welcome and (block.get("text") or "").strip():
+							attach_menu_here = True
 
 				# 1) content
 				if t == "circle" and block.get("circle"):
 					await send_circle(chat_id, block.get("circle", ""))
+					if flow == "welcome":
+						saw_circle_in_welcome = True
 
 				elif t == "video":
-					# ✅ СТОПОРИМ ФЛОУ ДО КЛИКА
+					# видео-стоп до клика (но без дублей и без смены текста)
 					await _send_video_gate(chat_id, block)
 					return
 
@@ -607,20 +573,28 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 					title = (block.get("title") or "").strip()
 					text = (block.get("text") or "").strip()
 					msg = title or text or " "
-					if kb:
+					if attach_menu_here:
+						unlocked = await is_lessons_unlocked(chat_id)
 						await _safe_call(
-							f"send_message(buttons) chat={chat_id}",
-							lambda: bot.send_message(chat_id, msg, reply_markup=kb)
+							f"send_message(welcome_menu_after_circle) chat={chat_id}",
+							lambda: bot.send_message(chat_id, msg, reply_markup=reply_main_menu(unlocked))
 						)
-					else:
-						if block.get("buttons"):
+						menu_attached = True
+						# inline kb если есть — отдельным сообщением, чтобы не конфликтовало с reply menu
+						if kb:
 							await _safe_call(
-								f"send_message(buttons_bad_json) chat={chat_id}",
-								lambda: bot.send_message(chat_id, "⚠️ buttons_json битый (невалидный JSON).")
+								f"send_message(welcome_inline_kb_after_circle) chat={chat_id}",
+								lambda: bot.send_message(chat_id, " ", reply_markup=kb)
+							)
+					else:
+						if kb:
+							await _safe_call(
+								f"send_message(buttons) chat={chat_id}",
+								lambda: bot.send_message(chat_id, msg, reply_markup=kb)
 							)
 						else:
 							await _safe_call(
-								f"send_message(buttons_empty) chat={chat_id}",
+								f"send_message(buttons_no_kb) chat={chat_id}",
 								lambda: bot.send_message(chat_id, msg)
 							)
 
@@ -628,18 +602,16 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 					# text / default
 					text = (block.get("text") or "").strip()
 					if text:
-						if attach_reply_menu:
+						if attach_menu_here:
 							unlocked = await is_lessons_unlocked(chat_id)
 							await _safe_call(
-								f"send_message(welcome_menu) chat={chat_id}",
+								f"send_message(welcome_menu_after_circle) chat={chat_id}",
 								lambda: bot.send_message(chat_id, text, reply_markup=reply_main_menu(unlocked))
 							)
-							menu_attached_once = True
-
-							# ✅ если CRM добавил inline кнопки — отправляем отдельным сообщением
+							menu_attached = True
 							if kb:
 								await _safe_call(
-									f"send_message(welcome_inline_kb) chat={chat_id}",
+									f"send_message(welcome_inline_kb_after_circle) chat={chat_id}",
 									lambda: bot.send_message(chat_id, " ", reply_markup=kb)
 								)
 						else:
@@ -694,15 +666,9 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 				log.exception("render_flow block failed flow=%s chat=%s block_id=%s", flow, chat_id, block.get("id"))
 				continue
 
-		# ✅ если дошли до конца флоу — считаем “прохождение курса”
+		# конец флоу
 		if flow == _COURSE_COMPLETE_FLOW:
 			await unlock_lessons(chat_id)
-			# можно сразу обновить меню
-			unlocked = True
-			await _safe_call(
-				f"send_message(course_done_menu) chat={chat_id}",
-				lambda: bot.send_message(chat_id, "✅ Курс завершён! Уроки теперь доступны в меню.", reply_markup=reply_main_menu(unlocked))
-			)
 
 		await _schedule_after_flow_actions(chat_id, flow)
 
@@ -742,54 +708,6 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────
-# Broadcast support via jobs key
-
-async def _run_broadcast_job(current_uid: int, job_key: str) -> None:
-	parts = job_key.split(":")
-	flow = ""
-	audience = ""
-	repeat = 0
-
-	if len(parts) >= 2:
-		flow = (parts[1] or "").strip()
-
-	if len(parts) >= 3:
-		audience = (parts[2] or "").strip().lower()
-
-	if len(parts) >= 4:
-		try:
-			repeat = int(parts[3] or 0)
-		except Exception:
-			repeat = 0
-
-	if not flow:
-		return
-
-	if audience == "all":
-		try:
-			users = await get_users(50000)
-		except Exception:
-			users = []
-		for u in users:
-			try:
-				uid = int(u.get("user_id") or 0)
-			except Exception:
-				uid = 0
-			if uid > 0:
-				asyncio.create_task(render_flow(uid, flow))
-	elif audience.isdigit():
-		uid = int(audience)
-		if uid > 0:
-			await render_flow(uid, flow)
-	else:
-		await render_flow(current_uid, flow)
-
-	if repeat > 0:
-		now = int(time.time())
-		await upsert_job(int(current_uid), job_key, now + repeat)
-
-
-# ─────────────────────────────────────────────────────────────
 # Jobs worker
 
 async def _execute_job_and_mark_done(jid: int, uid: int, job_key: str) -> None:
@@ -801,7 +719,6 @@ async def _execute_job_and_mark_done(jid: int, uid: int, job_key: str) -> None:
 					await render_flow(uid, flow)
 
 			elif job_key.startswith("resume:"):
-				# resume:<flow>:<pos>
 				parts = job_key.split(":", 2)
 				if len(parts) == 3:
 					flow = parts[1].strip()
@@ -873,9 +790,6 @@ async def _execute_job_and_mark_done(jid: int, uid: int, job_key: str) -> None:
 							)
 						)
 
-			elif job_key.startswith("broadcast:"):
-				await _run_broadcast_job(uid, job_key)
-
 		except Exception:
 			log.exception("job failed jid=%s uid=%s key=%s", jid, uid, job_key)
 
@@ -933,12 +847,9 @@ async def cmd_start(message: Message):
 	await refresh_flow_modes()
 	await schedule_from_flow_triggers(uid)
 
-	# можно сразу показать меню (с учётом unlocked)
-	unlocked = await is_lessons_unlocked(uid)
-	await _safe_call(
-		"send_message(start_menu)",
-		lambda: message.answer("👋 Добро пожаловать!", reply_markup=reply_main_menu(unlocked))
-	)
+	# ❗️ВАЖНО: не отправляем никакого "Добро пожаловать" от себя.
+	# Если welcome надо запускать сразу — запускай render_flow тут:
+	await render_flow(uid, "welcome")
 	return
 
 
@@ -989,8 +900,6 @@ async def cmd_support(message: Message):
 	await message.answer(f"🆘 Поддержка: {SUPPORT_USERNAME}")
 
 
-# ✅ кнопки меню на русском
-
 @dp.message(F.text == "📚 Уроки")
 async def btn_lessons(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
@@ -1026,7 +935,6 @@ async def cb_lesson(call: CallbackQuery):
 	await call.answer()
 	await inc_message(call.from_user.id, call.from_user.username or "")
 
-	# ✅ уроки только после полного курса
 	if not await is_lessons_unlocked(call.from_user.id):
 		await call.message.answer("🔒 Уроки откроются после полного прохождения курса.")
 		return
@@ -1038,11 +946,10 @@ async def cb_lesson(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("video:"))
 async def cb_video(call: CallbackQuery):
 	"""
-	Пользователь нажал "смотреть видео".
-	Действия:
-	1) отправляем ссылку на видео (url кнопкой)
-	2) ждём delay_seconds (из CRM у видео-блока)
-	3) продолжаем flow со следующего position
+	ОДИН клик:
+	- Telegram сразу открывает ссылку через answer(url=...)
+	- мы ставим delay (из CRM delay_seconds) и продолжаем flow позже
+	- убираем кнопку чтобы не было дублей
 	"""
 	try:
 		_, uid_s, block_id_s = call.data.split(":", 2)
@@ -1066,30 +973,34 @@ async def cb_video(call: CallbackQuery):
 		await call.answer("Видео не задано", show_alert=True)
 		return
 
-	# delay после клика (берём delay_seconds этого блока)
+	# анти-дубль: если уже кликали этот video block — повторно не реагируем
+	st = await _get_user_state(target_uid)
+	clicked_map = st.get("video_clicked", {})
+	if not isinstance(clicked_map, dict):
+		clicked_map = {}
+	if str(block_id) in clicked_map:
+		# уже было
+		await call.answer(url=video_url)  # всё равно откроем, но без повторных джобов
+		return
+
+	clicked_map[str(block_id)] = int(time.time())
+	st["video_clicked"] = clicked_map
+	await _set_user_state(target_uid, st)
+
+	# 1) открыть URL одним кликом
+	await call.answer(url=video_url)
+
+	# 2) убрать кнопку (чтобы не было дублей/хаоса)
+	try:
+		await call.message.edit_reply_markup(reply_markup=None)
+	except Exception:
+		pass
+
+	# 3) запланировать продолжение через delay (delay этого video блока)
 	delay_after_click = float(b.get("delay", 0) or 0)
 	if delay_after_click < 0:
 		delay_after_click = 0
 
-	# текст/кнопка из CRM (используем title + gate_button_text)
-	prompt = (b.get("title") or "").strip() or "<b>Видео</b>"
-	btn_text = (b.get("gate_button_text") or "").strip() or "▶️ Открыть видео"
-
-	await call.answer()
-
-	# 1) отправляем ссылку на видео
-	await _safe_call(
-		f"send_message(video_link) chat={target_uid}",
-		lambda: bot.send_message(
-			target_uid,
-			prompt,
-			reply_markup=InlineKeyboardMarkup(
-				inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=video_url)]]
-			)
-		)
-	)
-
-	# 2) планируем продолжение через delay
 	next_pos = int(b.get("position") or 0) + 1
 	if next_pos <= 0:
 		next_pos = 1
