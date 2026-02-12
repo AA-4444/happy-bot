@@ -60,8 +60,6 @@ def _norm_action_type(t: str) -> str:
 
 def _unit_to_seconds(unit: str) -> int:
 	u = (unit or "").strip().lower()
-	if u == "seconds":
-		return 1
 	if u == "minutes":
 		return 60
 	if u == "hours":
@@ -70,23 +68,26 @@ def _unit_to_seconds(unit: str) -> int:
 
 
 def seconds_to_value_unit(total_seconds: int, preferred_unit: str = "minutes") -> Tuple[int, str]:
+	"""
+	Утилита для CRM: красиво показать delay (секунды -> value+unit)
+	"""
 	s = int(total_seconds or 0)
 	p = (preferred_unit or "minutes").strip().lower()
-	if p not in ("seconds", "minutes", "hours", "days"):
+	if p not in ("minutes", "hours", "days"):
 		p = "minutes"
-	
+
 	if s <= 0:
 		return 0, p
-	
+
 	if s % 86400 == 0:
 		return s // 86400, "days"
 	if s % 3600 == 0:
 		return s // 3600, "hours"
 	if s % 60 == 0:
 		return s // 60, "minutes"
-	
-	# иначе — показываем как секунды (честно)
-	return s, "seconds"
+
+	# иначе округляем в минуты вверх (чтобы UI был удобный)
+	return max(1, (s + 59) // 60), "minutes"
 
 
 def value_unit_to_seconds(value: int, unit: str) -> int:

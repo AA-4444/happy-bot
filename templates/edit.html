@@ -2,8 +2,8 @@
 {% extends "base.html" %}
 {% block content %}
   <div class="flex items-center justify-between">
-	<h1 class="text-base font-medium">{{ "Новый блок" if is_new else "Редактировать блок" }}</h1>
-	<a href="/flow/{{ block.get('flow','') }}" class="text-sm text-white/50 hover:text-white/70">← назад</a>
+	<h1 class="text-base font-medium">{{ "New block" if is_new else "Edit block" }}</h1>
+	<a href="/flow/{{ block.get('flow','') }}" class="text-sm text-white/50 hover:text-white/70">← back</a>
   </div>
 
   {% if error %}
@@ -20,12 +20,12 @@
 	<input type="hidden" name="file_kind" value="{{ block.get('file_kind','') }}" />
 	<input type="hidden" name="file_name" value="{{ block.get('file_name','') }}" />
 
-	{# ✅ delay отправляем в секундах (в базу уйдёт в seconds) #}
+	{# ✅ delay отправляем в секундах (бэкенд как раньше), а юзер вводит value+unit #}
 	<input type="hidden" id="delaySeconds" name="delay_seconds" value="{{ block.get('delay', 1.0) }}" />
 
 	<div class="grid grid-cols-1 md:grid-cols-3 gap-3">
 	  <div>
-		<label class="text-xs text-white/50">Флоу</label>
+		<label class="text-xs text-white/50">flow</label>
 		<input
 		  name="flow"
 		  value="{{ block.get('flow','') }}"
@@ -34,7 +34,7 @@
 	  </div>
 
 	  <div>
-		<label class="text-xs text-white/50">Позиция</label>
+		<label class="text-xs text-white/50">position</label>
 		<input
 		  name="position"
 		  type="number"
@@ -44,7 +44,7 @@
 	  </div>
 
 	  <div>
-		<label class="text-xs text-white/50">Тип</label>
+		<label class="text-xs text-white/50">type</label>
 		<select
 		  id="typeSel"
 		  name="type"
@@ -60,7 +60,7 @@
 
 	<div class="grid grid-cols-1 md:grid-cols-3 gap-3">
 	  <div>
-		<label class="text-xs text-white/50">Заголовок (для video/buttons)</label>
+		<label class="text-xs text-white/50">title (для video/buttons)</label>
 		<input
 		  name="title"
 		  value="{{ block.get('title','') }}"
@@ -70,10 +70,8 @@
 
 	  {# ✅ Delay (human-friendly) #}
 	  <div>
-		<label class="text-xs text-white/50">Задержка (delay)</label>
-		<div class="text-[11px] text-white/35 -mt-0.5">
-		  Можно ставить секунды/минуты/часы/дни (в базу уйдёт в секундах)
-		</div>
+		<label class="text-xs text-white/50">delay</label>
+		<div class="text-[11px] text-white/35 -mt-0.5">можно ставить минуты/часы/дни (в базу уйдёт в секундах)</div>
 
 		<div class="mt-1 flex items-center gap-2">
 		  <input
@@ -90,10 +88,10 @@
 			id="delayUnit"
 			class="px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		  >
-			<option value="seconds">сек</option>
-			<option value="minutes">мин</option>
-			<option value="hours">час</option>
-			<option value="days">дн</option>
+			<option value="seconds">seconds</option>
+			<option value="minutes">minutes</option>
+			<option value="hours">hours</option>
+			<option value="days">days</option>
 		  </select>
 
 		  <button
@@ -102,7 +100,7 @@
 			onclick="applyDelayToSeconds()"
 			title="Синхронизировать delay → delay_seconds"
 		  >
-			Применить
+			Apply
 		  </button>
 		</div>
 
@@ -112,7 +110,7 @@
 	  </div>
 
 	  <div>
-		<label class="text-xs text-white/50">Активен (0/1)</label>
+		<label class="text-xs text-white/50">is_active (0/1)</label>
 		<input
 		  name="is_active"
 		  type="number"
@@ -124,21 +122,18 @@
 
 	<!-- TEXT -->
 	<div id="secText">
-	  <label class="text-xs text-white/50">Текст</label>
+	  <label class="text-xs text-white/50">text</label>
 	  <textarea
 		name="text"
 		rows="6"
 		class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 	  >{{ block.get('text','') }}</textarea>
-	  <div class="text-[11px] text-white/35 mt-1">
-		Для <b>video</b>: этот текст будет показан <b>над</b> кнопкой видео (по твоим новым правилам).
-	  </div>
 	</div>
 
 	<!-- MEDIA -->
 	<div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="secMedia">
 	  <div>
-		<label class="text-xs text-white/50">Кружок (circle_path) или загрузить файл</label>
+		<label class="text-xs text-white/50">circle_path (или загрузить файл)</label>
 		<input
 		  name="circle_path"
 		  value="{{ block.get('circle','') }}"
@@ -154,31 +149,25 @@
 	  </div>
 
 	  <div>
-		<label class="text-xs text-white/50">Ссылка на видео (video_url)</label>
+		<label class="text-xs text-white/50">video_url</label>
 		<input
 		  name="video_url"
 		  value="{{ block.get('video','') }}"
 		  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
-		  placeholder="https://..."
 		/>
-		<div class="text-[11px] text-white/35 mt-2">
-		  По новым правилам: дальше по сценарию пойдёт <b>только после нажатия</b> на кнопку видео (реализуется в bot.py).
-		  <br/>
-		  Текст кнопки видео берётся из <b>title</b> (если не пустой), иначе будет дефолт.
-		</div>
 	  </div>
 	</div>
 
 	<!-- ATTACHMENT -->
 	<div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
 	  <div class="flex items-center justify-between mb-3">
-		<div class="text-sm font-medium">Вложение</div>
+		<div class="text-sm font-medium">Attachment</div>
 		<div class="text-xs text-white/40">любой файл (pdf/docx/png/zip и т.д.)</div>
 	  </div>
 
 	  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
 		<div>
-		  <label class="text-xs text-white/50">Загрузить файл</label>
+		  <label class="text-xs text-white/50">upload file</label>
 		  <input type="file" name="attach_file" class="block mt-2 text-sm text-white/70" />
 		  <div class="text-[11px] text-white/35 mt-2">
 			Если загрузишь — файл сохранится в <code>media/</code> и будет отправляться ботом в этом блоке.
@@ -186,7 +175,7 @@
 		</div>
 
 		<div>
-		  <label class="text-xs text-white/50">Текущий</label>
+		  <label class="text-xs text-white/50">current</label>
 		  <div class="mt-2 text-sm text-white/80">
 			{% if block.get('file_path') %}
 			  <div class="text-[11px] text-white/45">kind: {{ block.get('file_kind','') }}</div>
@@ -202,7 +191,7 @@
 			  class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10"
 			  onclick="clearAttachment()"
 			>
-			  Очистить вложение
+			  Clear attachment
 			</button>
 		  </div>
 		</div>
@@ -212,8 +201,8 @@
 	<!-- ✅ NEXT LESSON GATE -->
 	<div class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
 	  <div class="flex items-center justify-between mb-3">
-		<div class="text-sm font-medium">Gate (кнопка “Дальше”)</div>
-		<div class="text-xs text-white/40">переход на следующий flow + напоминание</div>
+		<div class="text-sm font-medium">Next lesson gate</div>
+		<div class="text-xs text-white/40">кнопка “Готов…” + напоминание</div>
 	  </div>
 
 	  <div class="text-[11px] text-white/40 mb-4">
@@ -230,7 +219,7 @@
 			  name="gate_next_flow"
 			  class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 			>
-			  <option value="">— отключено —</option>
+			  <option value="">— disabled —</option>
 			  {% for f in flows %}
 				<option value="{{ f }}" {% if block.get('gate_next_flow','') == f %}selected{% endif %}>{{ f }}</option>
 			  {% endfor %}
@@ -249,17 +238,18 @@
 		</div>
 
 		<div>
-		  <label class="text-xs text-white/50">Текст кнопки</label>
+		  <label class="text-xs text-white/50">Button text</label>
 		  <input
 			name="gate_button_text"
-			value="{{ block.get('gate_button_text') or '✅ Готов / Дальше' }}"
+			value="{{ block.get('gate_button_text') or '✅ Готов к следующему уроку' }}"
 			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		  />
 		</div>
 	  </div>
 
+	  {# ✅ Сообщение над кнопкой (то самое “👇 Нажми кнопку…”) #}
 	  <div class="mt-3">
-		<label class="text-xs text-white/50">Текст над кнопкой (редактируемый)</label>
+		<label class="text-xs text-white/50">Text above button (editable)</label>
 		<input
 		  name="gate_prompt_text"
 		  value="{{ block.get('gate_prompt_text','') }}"
@@ -273,7 +263,7 @@
 
 	  <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
 		<div>
-		  <label class="text-xs text-white/50">Напоминание</label>
+		  <label class="text-xs text-white/50">Reminder</label>
 		  <input
 			name="gate_reminder_value"
 			type="number"
@@ -286,20 +276,20 @@
 		</div>
 
 		<div>
-		  <label class="text-xs text-white/50">Единица</label>
+		  <label class="text-xs text-white/50">Unit</label>
 		  {% set u = (block.get('gate_reminder_unit') or 'hours') %}
 		  <select
 			name="gate_reminder_unit"
 			class="w-full mt-1 px-3 py-2 rounded-xl bg-black/40 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/15"
 		  >
-			<option value="minutes" {% if u=='minutes' %}selected{% endif %}>мин</option>
-			<option value="hours" {% if u=='hours' %}selected{% endif %}>час</option>
-			<option value="days" {% if u=='days' %}selected{% endif %}>дн</option>
+			<option value="minutes" {% if u=='minutes' %}selected{% endif %}>minutes</option>
+			<option value="hours" {% if u=='hours' %}selected{% endif %}>hours</option>
+			<option value="days" {% if u=='days' %}selected{% endif %}>days</option>
 		  </select>
 		</div>
 
 		<div>
-		  <label class="text-xs text-white/50">Текст напоминания (опц.)</label>
+		  <label class="text-xs text-white/50">Reminder text (optional)</label>
 		  <input
 			name="gate_reminder_text"
 			value="{{ block.get('gate_reminder_text','') }}"
@@ -315,7 +305,7 @@
 		  class="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm hover:bg-white/10"
 		  onclick="clearGate()"
 		>
-		  Отключить gate
+		  Disable gate
 		</button>
 		<div class="text-[11px] text-white/35">
 		  Disabled = поле Next flow станет пустым (gate выключен).
@@ -326,13 +316,13 @@
 	<!-- BUTTONS EASY MODE -->
 	<div id="secButtons" class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
 	  <div class="flex items-center justify-between mb-3">
-		<div class="text-sm font-medium">Кнопки</div>
+		<div class="text-sm font-medium">Buttons</div>
 		<div class="text-xs text-white/40">до 3 кнопок</div>
 	  </div>
 
 	  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
 		<div>
-		  <label class="text-xs text-white/50">Кнопка 1 — текст</label>
+		  <label class="text-xs text-white/50">Button 1 text</label>
 		  <input
 			name="btn1_text"
 			value="{{ block.get('btn1_text','') }}"
@@ -341,7 +331,7 @@
 		  />
 		</div>
 		<div>
-		  <label class="text-xs text-white/50">Кнопка 1 — ссылка</label>
+		  <label class="text-xs text-white/50">Button 1 url</label>
 		  <input
 			name="btn1_url"
 			value="{{ block.get('btn1_url','') }}"
@@ -351,7 +341,7 @@
 		</div>
 
 		<div>
-		  <label class="text-xs text-white/50">Кнопка 2 — текст</label>
+		  <label class="text-xs text-white/50">Button 2 text</label>
 		  <input
 			name="btn2_text"
 			value="{{ block.get('btn2_text','') }}"
@@ -360,7 +350,7 @@
 		  />
 		</div>
 		<div>
-		  <label class="text-xs text-white/50">Кнопка 2 — ссылка</label>
+		  <label class="text-xs text-white/50">Button 2 url</label>
 		  <input
 			name="btn2_url"
 			value="{{ block.get('btn2_url','') }}"
@@ -370,7 +360,7 @@
 		</div>
 
 		<div>
-		  <label class="text-xs text-white/50">Кнопка 3 — текст</label>
+		  <label class="text-xs text-white/50">Button 3 text</label>
 		  <input
 			name="btn3_text"
 			value="{{ block.get('btn3_text','') }}"
@@ -379,7 +369,7 @@
 		  />
 		</div>
 		<div>
-		  <label class="text-xs text-white/50">Кнопка 3 — ссылка</label>
+		  <label class="text-xs text-white/50">Button 3 url</label>
 		  <input
 			name="btn3_url"
 			value="{{ block.get('btn3_url','') }}"
@@ -403,13 +393,12 @@
 	</div>
 
 	<button class="px-4 py-2 rounded-xl bg-white text-black text-sm font-medium hover:opacity-90">
-	  Сохранить
+	  Save
 	</button>
   </form>
 
   <script>
 	function toggleSections() {
-	  // сейчас не скрываем секции: CRM позволяет комбинировать (например: text + buttons)
 	  const secButtons = document.getElementById("secButtons");
 	  if (secButtons) {
 		secButtons.style.display = "block";
@@ -426,7 +415,7 @@
 	  if (fp) fp.value = '';
 	  if (fk) fk.value = '';
 	  if (fn) fn.value = '';
-	  alert('Вложение очищено. Нажми "Сохранить".');
+	  alert('Attachment очищен. Нажми Save.');
 	}
 
 	function clearGate() {
@@ -444,7 +433,7 @@
 	  if (ru) ru.value = 'hours';
 	  if (rt) rt.value = '';
 
-	  alert('Gate отключён. Нажми "Сохранить".');
+	  alert('Gate отключён. Нажми Save.');
 	}
 
 	// -------- Delay helpers (value+unit <-> seconds) --------
@@ -493,6 +482,7 @@
 	  if (pEl) pEl.textContent = String(Math.max(0, Math.floor(sec)));
 	}
 
+	// Автосинхронизация при изменении
 	document.addEventListener('DOMContentLoaded', () => {
 	  const typeSel = document.getElementById("typeSel");
 	  if (typeSel) typeSel.addEventListener("change", toggleSections);
