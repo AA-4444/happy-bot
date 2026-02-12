@@ -439,17 +439,10 @@ async def _schedule_gate_reminder(user_id: int, block_id: int, next_flow: str, s
 
 
 # ─────────────────────────────────────────────────────────────
-# VIDEO gating
-
-def _video_cb(user_id: int, block_id: int) -> str:
-	return f"video:{user_id}:{block_id}"
-
+# VIDEO gating (ОДНА кнопка, без второй)
 
 def _parse_delay_seconds(raw: Any) -> float:
-	"""
-	✅ КЛЮЧЕВОЙ ФИКС:
-	если delay пустой/None/"" -> 0, НЕ 1.0
-	"""
+	# ✅ ВАЖНО: если delay пустой -> 0 (никаких 1.0 по умолчанию!)
 	if raw is None:
 		return 0.0
 	if isinstance(raw, str) and raw.strip() == "":
@@ -461,15 +454,34 @@ def _parse_delay_seconds(raw: Any) -> float:
 		return 0.0
 
 
-async def _send_video_gate(chat_id: int, block: Dict[str, Any]) -> None:
+def _video_cb(user_id: int, flow: str, next_pos: int, block_id: int) -> str:
+	# flow без двоеточий на всякий случай
+	flow = (flow or "").replace(":", "_").strip()
+	return f"video:{int(user_id)}:{flow}:{int(next_pos)}:{int(block_id)}"
+
+
+async def _continue_flow_after_video(user_id: int, flow: str, start_pos: int, delay_s: float) -> None:
+	delay_s = float(delay_s or 0)
+	if delay_s > 0:
+		await asyncio.sleep(delay_s)
+	await render_flow(int(user_id), flow, start_position=int(start_pos))
+
+
+async def _send_video_gate(chat_id: int, flow: str, block: Dict[str, Any]) -> None:
 	block_id = int(block.get("id") or 0)
 	video_url = (block.get("video") or "").strip()
 	if not block_id or not video_url:
 		return
 
+	# текст как в CRM: title + text
 	prompt = (block.get("title") or "").strip() or " "
 	descr = (block.get("text") or "").strip()
 	msg = prompt if not descr else f"{prompt}\n\n{descr}"
+
+	# ✅ следующая позиция (чтобы продолжить ровно со следующего блока)
+	next_pos = int(block.get("position") or 0) + 1
+	if next_pos <= 0:
+		next_pos = 1
 
 	btn_text = "Видео"
 
@@ -479,7 +491,12 @@ async def _send_video_gate(chat_id: int, block: Dict[str, Any]) -> None:
 			chat_id,
 			msg,
 			reply_markup=InlineKeyboardMarkup(
-				inline_keyboard=[[InlineKeyboardButton(text=btn_text, callback_data=_video_cb(chat_id, block_id))]]
+				inline_keyboard=[[
+					InlineKeyboardButton(
+						text=btn_text,
+						callback_data=_video_cb(chat_id, flow, next_pos, block_id)
+					)
+				]]
 			)
 		)
 	)
@@ -537,6 +554,7 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 			log.exception("get_blocks failed flow=%s chat=%s", flow, chat_id)
 			return
 
+		# menu в welcome клеим к первому тексту после кружка
 		saw_circle = False
 		menu_attached = False
 
@@ -550,7 +568,7 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 					continue
 
 				t = (block.get("type") or "").strip()
-				# ✅ FIX: дефолт 0, а не 1.0
+				# ✅ FIX: дефолт 0 секунд (никаких задержек "из воздуха")
 				delay = _parse_delay_seconds(block.get("delay", None))
 				kb = build_buttons_kb(block.get("buttons"))
 
@@ -562,13 +580,15 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 						if saw_circle and (block.get("text") or "").strip() and t in ("text", "", None, "buttons"):
 							attach_reply_menu = True
 
+				# content
 				if t == "circle" and block.get("circle"):
 					await send_circle(chat_id, block.get("circle", ""))
 					if flow == _WELCOME_FLOW:
 						saw_circle = True
 
 				elif t == "video":
-					await _send_video_gate(chat_id, block)
+					# ✅ стопим flow до клика по ОДНОЙ кнопке
+					await _send_video_gate(chat_id, flow, block)
 					return
 
 				elif t == "buttons":
@@ -615,12 +635,14 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 								lambda: bot.send_message(chat_id, text, reply_markup=kb)
 							)
 
+				# attachments
 				file_path = (block.get("file_path") or "").strip()
 				file_kind = (block.get("file_kind") or "").strip()
 				file_name = (block.get("file_name") or "").strip()
 				if file_path:
 					await send_attachment(chat_id, file_path, file_kind, file_name)
 
+				# gate
 				next_flow = (block.get("gate_next_flow") or "").strip()
 				if next_flow:
 					if delay > 0:
@@ -651,6 +673,7 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 					)
 					return
 
+				# delay after non-gate blocks
 				if delay > 0:
 					await asyncio.sleep(delay)
 
@@ -887,7 +910,7 @@ async def cmd_start(message: Message):
 	uid = message.from_user.id
 	username = message.from_user.username or ""
 
-	# чтобы /start не "висел"
+	# ✅ /start должен отвечать МГНОВЕННО: всё тяжёлое — в фон
 	asyncio.create_task(inc_start(uid, username))
 
 	async def _bg_prepare():
@@ -899,6 +922,7 @@ async def cmd_start(message: Message):
 
 	asyncio.create_task(_bg_prepare())
 
+	# ✅ никакого "добро пожаловать" — сразу welcome flow
 	await render_flow(uid, _WELCOME_FLOW)
 	return
 
@@ -913,9 +937,11 @@ async def cmd_menu(message: Message):
 @dp.message(Command("lessons"))
 async def cmd_lessons(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
+
 	if not await is_lessons_unlocked(message.from_user.id):
 		await message.answer("🔒 Уроки откроются после полного прохождения курса.")
 		return
+
 	await message.answer("📚 <b>Уроки</b>\nВыбери день:", reply_markup=inline_lessons_menu())
 
 
@@ -982,9 +1008,11 @@ async def btn_support(message: Message):
 async def cb_lesson(call: CallbackQuery):
 	await call.answer()
 	await inc_message(call.from_user.id, call.from_user.username or "")
+
 	if not await is_lessons_unlocked(call.from_user.id):
 		await call.message.answer("🔒 Уроки откроются после полного прохождения курса.")
 		return
+
 	flow = call.data.split(":", 1)[1].strip()
 	await render_flow(call.from_user.id, flow)
 
@@ -992,11 +1020,16 @@ async def cb_lesson(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("video:"))
 async def cb_video(call: CallbackQuery):
 	"""
-	✅ FIX: если call.answer(url=...) не сработал — шлём fallback кнопку с url.
+	✅ ОДНА кнопка "Видео"
+	- нажал -> открыть url
+	- убрать кнопку (анти-дубль)
+	- продолжить flow после delay (если задан в CRM)
 	"""
 	try:
-		_, uid_s, block_id_s = call.data.split(":", 2)
+		_, uid_s, flow_s, next_pos_s, block_id_s = call.data.split(":", 4)
 		target_uid = int(uid_s)
+		flow = (flow_s or "").replace(":", "_").strip()
+		next_pos = int(next_pos_s)
 		block_id = int(block_id_s)
 	except Exception:
 		await call.answer("Ошибка кнопки", show_alert=True)
@@ -1006,6 +1039,7 @@ async def cb_video(call: CallbackQuery):
 		await call.answer("Это не для тебя", show_alert=True)
 		return
 
+	# достаём url и delay из блока
 	b = await get_block(block_id)
 	if not b:
 		await call.answer("Блок не найден", show_alert=True)
@@ -1020,7 +1054,7 @@ async def cb_video(call: CallbackQuery):
 		await call.answer("Ссылка должна начинаться с http:// или https://", show_alert=True)
 		return
 
-	# анти-дубль
+	# анти-дубль: если уже нажимали этот блок — просто открываем ссылку, но не продолжаем ещё раз
 	st = await _get_user_state(target_uid)
 	clicked = st.get("video_clicked", {})
 	if not isinstance(clicked, dict):
@@ -1031,48 +1065,25 @@ async def cb_video(call: CallbackQuery):
 		st["video_clicked"] = clicked
 		await _set_user_state(target_uid, st)
 
-	# убрать кнопку
+	# 1) открыть URL (сразу, чтобы не было loading)
+	try:
+		await call.answer(url=video_url)
+	except Exception:
+		# если клиент не открыл через callback — хотя бы закрываем loading
+		await call.answer()
+
+	# 2) убрать кнопку, чтобы не дублилась
 	try:
 		await call.message.edit_reply_markup(reply_markup=None)
 	except Exception:
 		pass
 
-	opened = False
-	try:
-		await call.answer(url=video_url)
-		opened = True
-	except Exception:
-		# чтобы loading точно исчез
-		try:
-			await call.answer()
-		except Exception:
-			pass
-
-	if not opened:
-		# fallback: сообщение с url-кнопкой
-		await _safe_call(
-			f"send_message(video_fallback_url) chat={target_uid}",
-			lambda: bot.send_message(
-				target_uid,
-				"Открыть видео:",
-				reply_markup=InlineKeyboardMarkup(
-					inline_keyboard=[[InlineKeyboardButton(text="Видео", url=video_url)]]
-				)
-			)
-		)
-
-	# если уже кликали — не ставим новые jobs
+	# 3) продолжение — только 1 раз
 	if already:
 		return
 
 	delay_after_click = _parse_delay_seconds(b.get("delay", None))
-
-	next_pos = int(b.get("position") or 0) + 1
-	if next_pos <= 0:
-		next_pos = 1
-
-	run_at = int(time.time()) + int(delay_after_click)
-	await upsert_job(target_uid, _job_resume(b.get("flow") or "", next_pos), run_at)
+	asyncio.create_task(_continue_flow_after_video(target_uid, flow, next_pos, delay_after_click))
 
 
 @dp.callback_query(F.data.startswith("gate:"))
