@@ -832,7 +832,7 @@ async def cmd_web(message: Message):
 @dp.message(Command("club"))
 async def cmd_club(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
-	await message.answer("🏛️ <b>Клуб Архитектора Счастья</b>", reply_markup=inline_club_button())
+	await message.answer("🏛️ <b>Клуб Архитектура Счастья</b>", reply_markup=inline_club_button())
 
 
 @dp.message(Command("support"))
