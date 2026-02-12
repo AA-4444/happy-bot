@@ -51,7 +51,7 @@ CRM_BASE_URL = (os.getenv("CRM_BASE_URL") or "").strip().rstrip("/")
 SUPPORT_USERNAME = "@TataZakzheva"
 
 WEB_URL = "https://www.happi10.com"
-CLUB_URL = "https://www.happi10.com/programs"
+CLUB_URL = "https://www.happi10.com/club"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -179,7 +179,7 @@ async def unlock_lessons(user_id: int) -> None:
 def reply_main_menu(lessons_unlocked: bool) -> ReplyKeyboardMarkup:
 	rows = [
 		[KeyboardButton(text="❓ FAQ")],
-		[KeyboardButton(text="🌐 Сайт"), KeyboardButton(text="🏛️ Клуб Архитектора Счастья")],
+		[KeyboardButton(text="🌐 Сайт"), KeyboardButton(text="🏛️ Клуб Архитектура Счастья")],
 		[KeyboardButton(text="🆘 Поддержка")],
 	]
 	if lessons_unlocked:
@@ -859,7 +859,7 @@ async def btn_web(message: Message):
 	await cmd_web(message)
 
 
-@dp.message(F.text == "🏛️ Клуб Архитектора Счастья")
+@dp.message(F.text == "🏛️ Клуб Архитектура Счастья")
 async def btn_club(message: Message):
 	await inc_message(message.from_user.id, message.from_user.username or "")
 	await cmd_club(message)
@@ -936,7 +936,7 @@ async def on_startup():
 		BotCommand(command="menu", description="Меню"),
 		BotCommand(command="faq", description="FAQ"),
 		BotCommand(command="web", description="Сайт"),
-		BotCommand(command="club", description="Клуб Архитектора Счастья"),
+		BotCommand(command="club", description="Клуб Архитектура Счастья"),
 		BotCommand(command="support", description="Поддержка"),
 	])
 
