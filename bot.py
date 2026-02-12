@@ -63,11 +63,15 @@ _RUNNING_JOBS: set[int] = set()
 _JOB_SEM = asyncio.Semaphore(int(os.getenv("JOBS_CONCURRENCY", "25")))
 _FLOW_MODES_REFRESH_SECONDS = int(os.getenv("FLOW_MODES_REFRESH_SECONDS", "20"))
 
+# ВАЖНО: большие ретраи = большие "задержки". Для сообщений ок, для медиа делаем fast.
 _SEND_RETRIES = int(os.getenv("SEND_RETRIES", "4"))
-_SEND_RETRY_BASE_SLEEP = float(os.getenv("SEND_RETRY_BASE_SLEEP", "1.0"))
+_SEND_RETRY_BASE_SLEEP = float(os.getenv("SEND_RETRY_BASE_SLEEP", "0.6"))
 
 # какой flow считать "конец курса" (для unlock уроков)
 _COURSE_COMPLETE_FLOW = (os.getenv("COURSE_COMPLETE_FLOW") or "day3").strip()
+
+# чтобы welcome НЕ запускался второй раз триггерами
+_WELCOME_FLOW_NAME = (os.getenv("WELCOME_FLOW_NAME") or "welcome").strip()
 
 
 def _lock(uid: int) -> asyncio.Lock:
@@ -144,41 +148,51 @@ async def unlock_lessons(user_id: int) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# Safe send with retries
+# Safe call helpers (НЕ делаем "секунды ожидания" на старте из-за медиа)
 
-async def _safe_call(label: str, fn: Callable[[], Awaitable[Any]]) -> Any:
+async def _safe_call(
+	label: str,
+	fn: Callable[[], Awaitable[Any]],
+	retries: int = _SEND_RETRIES,
+	base_sleep: float = _SEND_RETRY_BASE_SLEEP,
+) -> Any:
 	last_exc: Exception | None = None
 
-	for attempt in range(_SEND_RETRIES):
+	for attempt in range(max(1, int(retries))):
 		try:
 			return await fn()
 
 		except TelegramRetryAfter as e:
 			wait_s = int(getattr(e, "retry_after", 1) or 1)
 			last_exc = e
-			log.warning("%s: TelegramRetryAfter -> sleep %ss (attempt %s/%s)", label, wait_s, attempt + 1, _SEND_RETRIES)
+			log.warning("%s: TelegramRetryAfter -> sleep %ss (attempt %s/%s)", label, wait_s, attempt + 1, retries)
 			await asyncio.sleep(wait_s)
 
 		except TelegramNetworkError as e:
 			last_exc = e
-			sleep_s = _SEND_RETRY_BASE_SLEEP * (attempt + 1)
-			log.warning("%s: TelegramNetworkError -> sleep %.1fs (attempt %s/%s)", label, sleep_s, attempt + 1, _SEND_RETRIES)
+			sleep_s = float(base_sleep) * (attempt + 1)
+			log.warning("%s: TelegramNetworkError -> sleep %.1fs (attempt %s/%s)", label, sleep_s, attempt + 1, retries)
 			await asyncio.sleep(sleep_s)
 
 		except TelegramAPIError as e:
 			last_exc = e
-			sleep_s = _SEND_RETRY_BASE_SLEEP * (attempt + 1)
-			log.warning("%s: TelegramAPIError(%s) -> sleep %.1fs (attempt %s/%s)", label, type(e).__name__, sleep_s, attempt + 1, _SEND_RETRIES)
+			sleep_s = float(base_sleep) * (attempt + 1)
+			log.warning("%s: TelegramAPIError(%s) -> sleep %.1fs (attempt %s/%s)", label, type(e).__name__, sleep_s, attempt + 1, retries)
 			await asyncio.sleep(sleep_s)
 
 		except Exception as e:
 			last_exc = e
-			sleep_s = _SEND_RETRY_BASE_SLEEP * (attempt + 1)
-			log.exception("%s: unexpected error -> sleep %.1fs (attempt %s/%s)", label, sleep_s, attempt + 1, _SEND_RETRIES)
+			sleep_s = float(base_sleep) * (attempt + 1)
+			log.exception("%s: unexpected error -> sleep %.1fs (attempt %s/%s)", label, sleep_s, attempt + 1, retries)
 			await asyncio.sleep(sleep_s)
 
-	log.error("%s: failed after %s retries. last=%r", label, _SEND_RETRIES, last_exc)
+	log.error("%s: failed after %s retries. last=%r", label, retries, last_exc)
 	return None
+
+
+async def _safe_call_fast(label: str, fn: Callable[[], Awaitable[Any]]) -> Any:
+	# медиа/кружки: 1 попытка, без "накопительных" задержек
+	return await _safe_call(label, fn, retries=1, base_sleep=0.0)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -339,13 +353,15 @@ async def send_attachment(chat_id: int, file_path: str, file_kind: str = "", fil
 			else:
 				return await bot.send_document(chat_id, document=input_file)
 
-		res = await _safe_call(f"send_attachment(url,{kind}) chat={chat_id}", _send_url)
+		# медиа не должно тормозить весь flow
+		res = await _safe_call_fast(f"send_attachment(url,{kind}) chat={chat_id}", _send_url)
 		if res is not None:
 			return
 
 	abs_path = _resolve_local_path(file_path)
 	if not abs_path:
-		await _safe_call(
+		# без ретраев
+		await _safe_call_fast(
 			f"send_message(file_not_found) chat={chat_id}",
 			lambda: bot.send_message(chat_id, f"⚠️ Файл не найден: <code>{file_path}</code>")
 		)
@@ -364,9 +380,9 @@ async def send_attachment(chat_id: int, file_path: str, file_kind: str = "", fil
 		else:
 			return await bot.send_document(chat_id, document=f)
 
-	res = await _safe_call(f"send_attachment(local,{kind}) chat={chat_id}", _send_local)
+	res = await _safe_call_fast(f"send_attachment(local,{kind}) chat={chat_id}", _send_local)
 	if res is None:
-		await _safe_call(
+		await _safe_call_fast(
 			f"send_message(file_send_failed) chat={chat_id}",
 			lambda: bot.send_message(chat_id, f"⚠️ Не удалось отправить файл: <code>{file_path}</code>")
 		)
@@ -379,7 +395,7 @@ async def send_circle(chat_id: int, circle_path: str) -> None:
 
 	url = _to_public_url(p)
 	if url:
-		res = await _safe_call(
+		res = await _safe_call_fast(
 			f"send_video_note(url) chat={chat_id}",
 			lambda: bot.send_video_note(chat_id, video_note=URLInputFile(url, filename="circle.mp4"))
 		)
@@ -388,18 +404,19 @@ async def send_circle(chat_id: int, circle_path: str) -> None:
 
 	abs_path = _resolve_local_path(p)
 	if not abs_path:
-		await _safe_call(
+		await _safe_call_fast(
 			f"send_message(circle_not_found) chat={chat_id}",
 			lambda: bot.send_message(chat_id, f"⚠️ Файл не найден: <code>{p}</code>")
 		)
 		return
 
-	res = await _safe_call(
+	# 1 попытка (без задержек)
+	res = await _safe_call_fast(
 		f"send_video_note(local) chat={chat_id}",
 		lambda: bot.send_video_note(chat_id, video_note=FSInputFile(abs_path, filename="circle.mp4"))
 	)
 	if res is None:
-		await _safe_call(
+		await _safe_call_fast(
 			f"send_message(circle_send_failed) chat={chat_id}",
 			lambda: bot.send_message(chat_id, f"⚠️ Не удалось отправить кружок: <code>{p}</code>")
 		)
@@ -440,41 +457,41 @@ async def _schedule_gate_reminder(user_id: int, block_id: int, next_flow: str, s
 
 
 # ─────────────────────────────────────────────────────────────
-# VIDEO callback (1 клик -> открыть url + поставить delay -> продолжить)
+# VIDEO callback (ОДИН клик -> открыть url + поставить delay -> продолжить)
+# ТВОЁ ТРЕБОВАНИЕ:
+# - кнопку НЕ переименовываем самовольно: берём из CRM (block.title), дефолт "Смотри видео урок"
+# - текст над кнопкой можно менять в CRM: берём из CRM (block.text)
+# - один клик: Telegram откроет ссылку и мы продолжим flow после delay
 
 def _video_cb(user_id: int, block_id: int) -> str:
 	return f"video:{user_id}:{block_id}"
 
 
-async def _send_video_gate(chat_id: int, block: Dict[str, Any], reply_menu: Optional[ReplyKeyboardMarkup] = None) -> None:
-	"""
-	Видео-блок:
-	- block.text = текст над кнопкой (редактируется в CRM)
-	- block.title = текст кнопки (редактируется в CRM). Если пусто -> "Смотри видео урок"
-	- block.video = url
-	- block.delay = задержка после клика перед продолжением
-	"""
+async def _send_video_gate(chat_id: int, block: Dict[str, Any]) -> None:
 	block_id = int(block.get("id") or 0)
 	video_url = (block.get("video") or "").strip()
 	if not block_id or not video_url:
 		return
 
-	prompt_text = (block.get("text") or "").strip() or " "
-	btn_text = (block.get("title") or "").strip() or "Смотри видео урок"
+	prompt_text = (block.get("text") or "").strip()  # текст над кнопкой
+	if not prompt_text:
+		prompt_text = " "
 
-	await _safe_call(
+	btn_text = (block.get("title") or "").strip()  # текст кнопки
+	if not btn_text:
+		btn_text = "Смотри видео урок"
+
+	# важно: НЕ отправляем второй "линк-месседж", просто показываем кнопку
+	await _safe_call_fast(
 		f"send_message(video_gate) chat={chat_id}",
 		lambda: bot.send_message(
 			chat_id,
 			prompt_text,
 			reply_markup=InlineKeyboardMarkup(
 				inline_keyboard=[[InlineKeyboardButton(text=btn_text, callback_data=_video_cb(chat_id, block_id))]]
-			) if reply_menu is None else InlineKeyboardMarkup(
-				inline_keyboard=[[InlineKeyboardButton(text=btn_text, callback_data=_video_cb(chat_id, block_id))]]
 			)
 		)
 	)
-	# reply_menu к видео-сообщению НЕ привязываем (по твоему требованию)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -530,7 +547,7 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 			return
 
 		# ✅ ТВОЁ ТРЕБОВАНИЕ:
-		# меню в welcome должно приклеиться к "сообщению после кружка" (которое идёт вторым)
+		# меню в welcome приклеиваем к сообщению ПОСЛЕ кружка (ко второму текстовому)
 		saw_circle_in_welcome = False
 		menu_attached = False
 
@@ -547,25 +564,22 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 				delay = float(block.get("delay", 1.0) or 0)
 				kb = build_buttons_kb(block.get("buttons"))
 
-				# определяем, надо ли приклеить меню к этому блоку
 				attach_menu_here = False
-				if flow == "welcome" and (not menu_attached):
+				if flow == _WELCOME_FLOW_NAME and (not menu_attached):
 					if t == "circle":
-						# меню НЕ сюда
 						pass
 					else:
-						# меню должно быть "на сообщении после кружка"
 						if saw_circle_in_welcome and (block.get("text") or "").strip():
 							attach_menu_here = True
 
 				# 1) content
 				if t == "circle" and block.get("circle"):
 					await send_circle(chat_id, block.get("circle", ""))
-					if flow == "welcome":
+					if flow == _WELCOME_FLOW_NAME:
 						saw_circle_in_welcome = True
 
 				elif t == "video":
-					# видео-стоп до клика (но без дублей и без смены текста)
+					# стоп до клика
 					await _send_video_gate(chat_id, block)
 					return
 
@@ -573,30 +587,26 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 					title = (block.get("title") or "").strip()
 					text = (block.get("text") or "").strip()
 					msg = title or text or " "
+
 					if attach_menu_here:
 						unlocked = await is_lessons_unlocked(chat_id)
-						await _safe_call(
+						await _safe_call_fast(
 							f"send_message(welcome_menu_after_circle) chat={chat_id}",
 							lambda: bot.send_message(chat_id, msg, reply_markup=reply_main_menu(unlocked))
 						)
 						menu_attached = True
-						# inline kb если есть — отдельным сообщением, чтобы не конфликтовало с reply menu
+
+						# если CRM дал inline кнопки — отдельно, чтобы не смешивать с reply-menu
 						if kb:
-							await _safe_call(
+							await _safe_call_fast(
 								f"send_message(welcome_inline_kb_after_circle) chat={chat_id}",
 								lambda: bot.send_message(chat_id, " ", reply_markup=kb)
 							)
 					else:
-						if kb:
-							await _safe_call(
-								f"send_message(buttons) chat={chat_id}",
-								lambda: bot.send_message(chat_id, msg, reply_markup=kb)
-							)
-						else:
-							await _safe_call(
-								f"send_message(buttons_no_kb) chat={chat_id}",
-								lambda: bot.send_message(chat_id, msg)
-							)
+						await _safe_call_fast(
+							f"send_message(buttons) chat={chat_id}",
+							lambda: bot.send_message(chat_id, msg, reply_markup=kb)
+						)
 
 				else:
 					# text / default
@@ -604,32 +614,34 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 					if text:
 						if attach_menu_here:
 							unlocked = await is_lessons_unlocked(chat_id)
-							await _safe_call(
+							await _safe_call_fast(
 								f"send_message(welcome_menu_after_circle) chat={chat_id}",
 								lambda: bot.send_message(chat_id, text, reply_markup=reply_main_menu(unlocked))
 							)
 							menu_attached = True
+
 							if kb:
-								await _safe_call(
+								await _safe_call_fast(
 									f"send_message(welcome_inline_kb_after_circle) chat={chat_id}",
 									lambda: bot.send_message(chat_id, " ", reply_markup=kb)
 								)
 						else:
-							await _safe_call(
+							await _safe_call_fast(
 								f"send_message(text) chat={chat_id}",
 								lambda: bot.send_message(chat_id, text, reply_markup=kb)
 							)
 
-				# 2) attachment
+				# 2) attachment (не тормозит flow)
 				file_path = (block.get("file_path") or "").strip()
 				file_kind = (block.get("file_kind") or "").strip()
 				file_name = (block.get("file_name") or "").strip()
 				if file_path:
 					await send_attachment(chat_id, file_path, file_kind, file_name)
 
-				# 3) GATE
+				# 3) GATE (останавливает flow)
 				next_flow = (block.get("gate_next_flow") or "").strip()
 				if next_flow:
+					# delay ПЕРЕД gate — это твоё текущее поведение (оставляю)
 					if delay > 0:
 						await asyncio.sleep(delay)
 
@@ -641,7 +653,7 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 					if rem_sec > 0 and block_id > 0:
 						await _schedule_gate_reminder(chat_id, block_id, next_flow, rem_sec)
 
-					await _safe_call(
+					await _safe_call_fast(
 						f"send_message(gate_prompt) chat={chat_id}",
 						lambda: bot.send_message(
 							chat_id,
@@ -675,6 +687,7 @@ async def render_flow(chat_id: int, flow: str, start_position: int = 0):
 
 # ─────────────────────────────────────────────────────────────
 # Scheduling from CRM (flow_triggers) only if mode == auto
+# ВАЖНО: welcome НЕ планируем тут, иначе будет дубль (ты это и поймал)
 
 async def schedule_from_flow_triggers(user_id: int) -> bool:
 	try:
@@ -694,6 +707,10 @@ async def schedule_from_flow_triggers(user_id: int) -> bool:
 			if not flow or is_active != 1:
 				continue
 			if offset_seconds < 0:
+				continue
+
+			# ✅ анти-дубль welcome
+			if flow == _WELCOME_FLOW_NAME:
 				continue
 
 			if _mode(flow) != "auto":
@@ -774,7 +791,7 @@ async def _execute_job_and_mark_done(jid: int, uid: int, job_key: str) -> None:
 						except Exception:
 							pass
 
-						await _safe_call(
+						await _safe_call_fast(
 							f"send_message(gate_reminder) chat={uid}",
 							lambda: bot.send_message(
 								uid,
@@ -844,12 +861,12 @@ async def cmd_start(message: Message):
 
 	await inc_start(uid, username)
 
+	# НЕ шлём "👋 Добро пожаловать!" от себя вообще.
+	# Сразу запускаем welcome. Меню приклеится к сообщению после кружка.
 	await refresh_flow_modes()
 	await schedule_from_flow_triggers(uid)
 
-	# ❗️ВАЖНО: не отправляем никакого "Добро пожаловать" от себя.
-	# Если welcome надо запускать сразу — запускай render_flow тут:
-	await render_flow(uid, "welcome")
+	await render_flow(uid, _WELCOME_FLOW_NAME)
 	return
 
 
@@ -947,9 +964,10 @@ async def cb_lesson(call: CallbackQuery):
 async def cb_video(call: CallbackQuery):
 	"""
 	ОДИН клик:
-	- Telegram сразу открывает ссылку через answer(url=...)
-	- мы ставим delay (из CRM delay_seconds) и продолжаем flow позже
-	- убираем кнопку чтобы не было дублей
+	1) Telegram сразу открывает ссылку через call.answer(url=...)
+	2) мы ставим delay (из CRM delay_seconds этого video-блока)
+	3) продолжаем flow с следующего блока
+	4) убираем кнопку, чтобы не было "дубля" и второго клика
 	"""
 	try:
 		_, uid_s, block_id_s = call.data.split(":", 2)
@@ -973,30 +991,26 @@ async def cb_video(call: CallbackQuery):
 		await call.answer("Видео не задано", show_alert=True)
 		return
 
-	# анти-дубль: если уже кликали этот video block — повторно не реагируем
+	# анти-дубль: повторный клик не создаёт новые jobs
 	st = await _get_user_state(target_uid)
 	clicked_map = st.get("video_clicked", {})
 	if not isinstance(clicked_map, dict):
 		clicked_map = {}
-	if str(block_id) in clicked_map:
-		# уже было
-		await call.answer(url=video_url)  # всё равно откроем, но без повторных джобов
-		return
-
-	clicked_map[str(block_id)] = int(time.time())
-	st["video_clicked"] = clicked_map
-	await _set_user_state(target_uid, st)
+	if str(block_id) not in clicked_map:
+		clicked_map[str(block_id)] = int(time.time())
+		st["video_clicked"] = clicked_map
+		await _set_user_state(target_uid, st)
 
 	# 1) открыть URL одним кликом
 	await call.answer(url=video_url)
 
-	# 2) убрать кнопку (чтобы не было дублей/хаоса)
+	# 2) убрать кнопку
 	try:
 		await call.message.edit_reply_markup(reply_markup=None)
 	except Exception:
 		pass
 
-	# 3) запланировать продолжение через delay (delay этого video блока)
+	# 3) планируем продолжение
 	delay_after_click = float(b.get("delay", 0) or 0)
 	if delay_after_click < 0:
 		delay_after_click = 0
